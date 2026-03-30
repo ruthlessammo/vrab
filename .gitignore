@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+
+# Kill switch
+/tmp/VRAB_KILL

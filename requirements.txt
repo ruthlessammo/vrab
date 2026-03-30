@@ -1,0 +1,8 @@
+aiohttp>=3.9
+websockets>=12.0
+pandas>=2.0
+numpy>=1.26
+python-dotenv>=1.0
+hyperliquid-python-sdk>=0.5
+flask>=3.0
+pytest>=8.0

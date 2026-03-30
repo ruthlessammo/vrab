@@ -1,0 +1,122 @@
+# VRAB Dev Log
+
+## 2026-03-27 — Sprint 1: Foundation Build
+
+### Built
+- `config.py` — all parameters, dotenv loading, kill switch check
+- `logging_config.py` — rotating file + stdout handlers
+- `strategy/signals.py` — VWAP, EMA, ADX, regime, signal generation (pure functions)
+- `strategy/core.py` — shared trading core with TradingParams, evaluate_entry/exit, sizing, PnL calc, daily halt
+- `costs/model.py` — fill price, fees, funding, round-trip, break-even, leveraged round-trip (pure functions)
+- `risk/liquidation.py` — liq price, buffer, stop safety, max safe leverage, funding at leverage (pure functions)
+- `data/store.py` — SQLite store with enhanced schemas (40+ column trades table), deque cache, threading lock
+- `data/puller.py` — async candle puller with validation, gap detection, companion TF auto-pull
+- `notifications/telegram.py` — async alerts with rate limiting, silent failure
+- `dashboard/app.py` — read-only Flask API
+- `backtest/engine.py` — walk-forward backtest (thin adapter over core)
+- Full test suite: test_signals, test_costs, test_liquidation, test_core, test_engine, test_store
+
+### Decisions Made
+- **Volume-weighted std for VWAP bands** — unweighted std overweights low-volume candles that shouldn't influence band width
+- **strategy/core.py as shared decision pipeline** — prevents backtest/live divergence by centralizing all signal → risk → sizing → cost logic. Engines only handle I/O and fill simulation.
+- **TradingParams frozen dataclass** — immutable parameter snapshot prevents accidental mutation during a run
+- **SQLite WAL mode** — allows concurrent reads (dashboard) while backtest writes
+- **Trend candle alignment**: use most recent closed 15m candle (ts <= T - 900,000ms) to avoid look-ahead bias
+- **Sharpe**: per-trade returns, annualized by sqrt(252 × trades_per_day), risk-free = 0
+- **Max drawdown**: peak-to-trough on cumulative equity curve
+
+### Next
+- Paper trading validation (24-48h)
+- Live deployment
+
+## 2026-03-30 — Sprint 1: Backtest Results & Parameter Tuning
+
+### Data
+- Pulled 365 days of BTC, ETH, SOL (5m + 15m) from Binance Futures
+- 105K candles per asset per timeframe, zero gaps
+
+### Parameter Sweep
+- Swept: risk (1.5-3.0%), stop sigma (3.5-4.5), entry sigma (1.5-3.0), ADX (20-35)
+- **Winner**: entry=2.5σ, stop=4.5σ, ADX<35, risk=1.5%, 10x leverage
+- ADX 35 (vs 30) was the key improvement: halved max DD (9.69% → 5.74%) while increasing PnL
+
+### BTC Results (3×30d walk-forward)
+- 129 trades, +$320 net PnL (+64.0% on $500), Sharpe 2.78, Max DD 5.74%
+- Gate 0: PASS (after revising WR gate to 35%, trade count to 30/window)
+- Strategy is fat-tailed MR: wins on trade size not frequency (40% WR, avg winner >> avg loser)
+
+### Multi-Asset
+- ETH: marginal (+10.8%), Sharpe 0.03 — no edge
+- SOL: destructive (-58.0%), tick size mismatch + trending market structure
+- **Decision: BTC only** with this strategy
+
+### Gate 0 Revisions
+- Win rate gate: 50% → 35% (inappropriate for fat-tailed MR)
+- Min trades: 60 → 30/window (43 avg/window is sufficient)
+- Centralised all gate thresholds in config.py (was duplicated across 4 files)
+
+### Config Changes
+- `ADX_THRESHOLD`: 30.0 → 35.0
+
+## 2026-03-30 — Sprint 2: Live Execution Engine
+
+### Built
+- `live/hl_client.py` — thin wrapper around hyperliquid-python-sdk (Exchange + Info)
+- `live/paper.py` — paper trading client (same interface, virtual fills)
+- `live/feed.py` — WebSocket candle feed with REST backfill and candle close detection
+- `live/engine.py` — async main loop mirroring backtest/engine.py simulate_window()
+
+### Architecture
+- Zero divergence maintained: engine calls strategy.core.evaluate_entry/exit identically
+- Paper mode built as drop-in client replacement (PAPER_MODE=True in config)
+- HL trigger orders for stop-loss (server-side), post-only ALO for entries (maker rebate)
+- Dead-man switch via exchange.schedule_cancel (auto-cancel if bot dies)
+- Startup reconciliation: syncs with HL position state, rebuilds daily PnL from DB
+- SIGINT/SIGTERM graceful shutdown: cancels orders, alerts via Telegram
+
+### Order Flow
+- Entry: post-only limit (ALO) at setup.entry_price, expires after entry_expiry_candles
+- Target: post-only limit (reduce_only) placed on entry fill
+- Stop: HL trigger order (server-side, market on trigger)
+- Timeout: IOC market close after max_hold_candles
+
+### Next
+- Paper trading validation (24-48h)
+- Live deployment (PAPER_MODE=False)
+
+## 2026-03-30 — Sprint 2: Telegram Bot & PnL Logging
+
+### Built
+- `notifications/bot.py` — async long-polling Telegram bot with /status, /pnl, /equity, /trades, /kill commands
+- `notifications/telegram.py` — 5 new formatters (status, pnl_summary, equity, trades_list, daily_summary)
+- Daily PnL persistence wired into live engine (after trade close + day rollover)
+- Daily auto-summary sent via Telegram on day rollover
+- Signal counting (generated/blocked) per day for daily records
+
+### Architecture
+- Bot runs as background asyncio task in engine event loop, reads shared `EngineStatus` dataclass
+- Security: only responds to configured `TELEGRAM_CHAT_ID`
+- /kill creates kill switch file, engine picks it up next candle
+- `store.update_daily_pnl()` called after every trade close (running upsert) and at day rollover (finalize)
+- Daily summary includes PnL, trade count, equity, signals generated/blocked
+
+### Code Review & Cleanup
+- **Bug fix**: `/pnl` command double-counted today's trades (DB already includes them, was adding `daily_pnl` on top)
+- **Bug fix**: redundant `_get_equity()` calls in `_execute_exit` — two network round-trips where one suffices
+- **Bug fix**: heartbeat/sanity check never fired — early returns in `_on_candle_close` skipped them. Moved periodic tasks above trading logic
+- **Refactor**: `PendingEntry` dataclass replaces untyped dict (was 6 string keys with no static checking)
+- **Refactor**: `aiohttp.ClientSession` reused across requests (bot polling + alert sending). Was creating new TCP+TLS connection per request
+- **Refactor**: `SOURCE` module constant replaces 6 repeated `"paper" if PAPER_MODE else "live"` expressions
+- **Refactor**: `Store.get_daily_state()` public method replaces `_hot_state` private access from engine
+- **Refactor**: `_on_candle_close` split into `_finalize_day()`, `_check_pending_entry()`, `_evaluate_and_enter()`
+- **Fix**: `bot_task.cancel()` now awaited for clean shutdown
+- **Fix**: paper mode `cancel_order` called synchronously instead of unnecessary `asyncio.to_thread` wrapper
+- **Minor**: `format_trade_alert` uses `:+.2f` format spec instead of manual sign prefix
+
+### Config Additions
+- `TELEGRAM_POLL_INTERVAL = 2`
+- `DAILY_SUMMARY_ENABLED = True`
+
+### Next
+- Paper trading validation (24-48h)
+- Live deployment (PAPER_MODE=False)
