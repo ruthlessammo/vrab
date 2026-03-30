@@ -135,8 +135,15 @@ class LiveEngine:
         candle_queue: asyncio.Queue = asyncio.Queue()
 
         # Setup signal handlers for graceful shutdown
+        # Second signal forces immediate exit
+        def _handle_signal():
+            if self._shutdown:
+                logger.info("Forced exit")
+                raise SystemExit(1)
+            asyncio.ensure_future(self._graceful_shutdown())
+
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.ensure_future(self._graceful_shutdown()))
+            loop.add_signal_handler(sig, _handle_signal)
 
         # Step 1: Connect and reconcile
         logger.info("Starting live engine (paper=%s)", PAPER_MODE)
@@ -747,16 +754,24 @@ class LiveEngine:
         """Handle SIGINT/SIGTERM — cancel orders, set shutdown flag."""
         logger.info("Graceful shutdown initiated")
         self._shutdown = True
-        await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
-        if self._position and not PAPER_MODE:
-            logger.info("Open position left on exchange — NOT auto-closing on shutdown")
-            await send_alert(
-                f"*VRAB Shutting Down*\n"
-                f"Open position: `{self._position.side}` {self._position.size_btc:.5f} BTC\n"
-                f"Stop order should remain on HL"
-            )
-        else:
-            await send_alert("*VRAB Stopped*")
+        try:
+            await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
+        except Exception as e:
+            logger.warning("Cancel orders on shutdown failed: %s", e)
+
+        # Best-effort alert with 3s timeout — don't block shutdown
+        try:
+            if self._position and not PAPER_MODE:
+                logger.info("Open position left on exchange — NOT auto-closing on shutdown")
+                await asyncio.wait_for(send_alert(
+                    f"*VRAB Shutting Down*\n"
+                    f"Open position: `{self._position.side}` {self._position.size_btc:.5f} BTC\n"
+                    f"Stop order should remain on HL"
+                ), timeout=3)
+            else:
+                await asyncio.wait_for(send_alert("*VRAB Stopped*"), timeout=3)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
     @staticmethod
     def _extract_oid(result: dict) -> int | None:

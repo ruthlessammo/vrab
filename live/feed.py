@@ -87,7 +87,15 @@ class CandleFeed:
 
     def _on_candle(self, msg: dict) -> None:
         """WebSocket callback — runs in the SDK's background thread."""
+        logger.debug("WS raw msg keys=%s", list(msg.keys()))
         data = msg.get("data", {})
+        if not data:
+            logger.debug("WS msg has no 'data' key, full msg: %s", str(msg)[:500])
+            return
+        if isinstance(data, list):
+            logger.debug("WS data is list (len=%d), first=%s", len(data), str(data[0])[:300] if data else "empty")
+            # HL SDK sends candle updates as a list of candle dicts
+            data = data[-1] if data else {}
         tf = data.get("i", "")
         ts = int(data.get("t", 0))
 
