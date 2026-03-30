@@ -165,11 +165,18 @@ class LiveEngine:
 
         # Step 5: Main loop — process candle close events
         logger.info("Engine running — waiting for candle events...")
+        no_event_count = 0
         while not self._shutdown:
             try:
-                event = await asyncio.wait_for(candle_queue.get(), timeout=360)
+                event = await asyncio.wait_for(candle_queue.get(), timeout=5)
+                no_event_count = 0
+            except asyncio.CancelledError:
+                break
             except asyncio.TimeoutError:
-                logger.warning("No candle event for 6 minutes — checking connection")
+                no_event_count += 1
+                if no_event_count >= 72:  # 72 × 5s = 6 minutes
+                    logger.warning("No candle event for 6 minutes — checking connection")
+                    no_event_count = 0
                 continue
 
             if event.get("type") != "candle_close":
@@ -347,7 +354,7 @@ class LiveEngine:
             return
 
         # --- No position, no pending: evaluate entry ---
-        self._evaluate_and_enter(
+        await self._evaluate_and_enter(
             candle, candle_ts, equity, funding_rate,
             closes, highs, lows, volumes,
             t_closes, t_highs, t_lows,
