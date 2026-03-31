@@ -1,7 +1,8 @@
-"""WebSocket candle feed with REST backfill and reconnection.
+"""WebSocket candle feed with REST backfill and auto-reconnection.
 
 Subscribes to 5m + 15m BTC candles via the HL SDK's WebsocketManager.
 Detects candle closes and pushes events to an asyncio.Queue for the engine.
+Auto-reconnects on WebSocket disconnect.
 """
 
 import asyncio
@@ -9,8 +10,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from hyperliquid.info import Info
-
+from config import HL_BASE_URL, WS_RECONNECT_MAX_BACKOFF
 from data.store import Candle, Store
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class CandleFeed:
 
     def __init__(
         self,
-        info: Info,
+        info,
         symbol: str,
         store: Store,
         candle_queue: asyncio.Queue,
@@ -42,8 +42,17 @@ class CandleFeed:
 
         # Track the latest candle open timestamp to detect closes
         self._last_ts: dict[str, int] = {}
+        self._last_msg_time: float = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._sub_ids: list[int] = []
+        self._stopped = False
+
+    @property
+    def seconds_since_last_msg(self) -> float:
+        """Seconds since last WS message. 0 if no messages received yet."""
+        if self._last_msg_time == 0.0:
+            return 0.0
+        return time.time() - self._last_msg_time
 
     def backfill(self) -> None:
         """Pull recent candles from REST to warm the cache."""
@@ -81,13 +90,13 @@ class CandleFeed:
                 datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M"),
             )
 
-            # Track the latest candle ts
             if candles:
                 self._last_ts[tf] = candles[-1].ts
 
     def _on_candle(self, msg: dict) -> None:
         """WebSocket callback — runs in the SDK's background thread."""
         try:
+            self._last_msg_time = time.time()
             self._process_candle_msg(msg)
         except Exception as e:
             logger.error("WS candle callback error: %s (msg=%s)", e, str(msg)[:500])
@@ -96,7 +105,6 @@ class CandleFeed:
         """Parse and handle a candle WS message."""
         data = msg.get("data", msg)
 
-        # SDK sends candle data as a list of candle dicts
         if isinstance(data, list):
             if not data:
                 return
@@ -147,8 +155,47 @@ class CandleFeed:
             self._sub_ids.append(sub_id)
             logger.info("Subscribed to %s %s candles (sub_id=%d)", self._symbol, tf, sub_id)
 
+    def reconnect(self) -> None:
+        """Tear down old WS and create a fresh connection + subscriptions.
+
+        Called from engine via asyncio.to_thread when stale connection detected.
+        """
+        logger.warning("Reconnecting WebSocket feed...")
+
+        # Tear down old subscriptions
+        for sub_id in self._sub_ids:
+            try:
+                self._info.unsubscribe(
+                    {"type": "candle", "coin": self._symbol, "interval": self._primary_tf},
+                    sub_id,
+                )
+            except Exception:
+                pass
+        self._sub_ids.clear()
+
+        # Create fresh Info object with new WS connection
+        from hyperliquid.info import Info
+        try:
+            self._info = Info(base_url=HL_BASE_URL, skip_ws=False)
+        except Exception as e:
+            logger.error("Failed to create new Info object: %s", e)
+            return
+
+        # Backfill any missed candles
+        self.backfill()
+
+        # Re-subscribe
+        for tf in (self._primary_tf, self._trend_tf):
+            sub = {"type": "candle", "coin": self._symbol, "interval": tf}
+            sub_id = self._info.subscribe(sub, self._on_candle)
+            self._sub_ids.append(sub_id)
+            logger.info("Reconnected: subscribed to %s %s candles (sub_id=%d)", self._symbol, tf, sub_id)
+
+        self._last_msg_time = 0.0
+
     def stop(self) -> None:
         """Unsubscribe and disconnect."""
+        self._stopped = True
         for sub_id in self._sub_ids:
             try:
                 self._info.unsubscribe(

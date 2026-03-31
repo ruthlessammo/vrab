@@ -181,8 +181,14 @@ class LiveEngine:
                 break
             except asyncio.TimeoutError:
                 no_event_count += 1
+                # After 6 minutes of silence, reconnect the WS feed
                 if no_event_count >= 72:  # 72 × 5s = 6 minutes
-                    logger.warning("No candle event for 6 minutes — checking connection")
+                    logger.warning("No candle event for 6 minutes — reconnecting feed")
+                    try:
+                        await asyncio.to_thread(feed.reconnect)
+                        await send_alert("*Feed Reconnected* — WS was stale")
+                    except Exception as e:
+                        logger.error("Feed reconnect failed: %s", e)
                     no_event_count = 0
                 continue
 
