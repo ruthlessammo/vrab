@@ -100,6 +100,15 @@ def format_status(status, position) -> str:
             f"  Hold: {position.hold_candles} candles"
         )
 
+    market_str = "_Waiting for data_"
+    if status.price > 0:
+        sigma_bar = _sigma_bar(status.sigma_dist)
+        market_str = (
+            f"Price: `{status.price:.1f}` | VWAP: `{status.vwap:.1f}`\n"
+            f"σ: `{status.sigma_dist:+.2f}` {sigma_bar} (entry at ±2.5)\n"
+            f"ADX: `{status.adx:.1f}` | Trend: `{status.trend}`"
+        )
+
     uptime_h = status.uptime_seconds / 3600
     return (
         f"*VRAB Status*\n"
@@ -108,8 +117,17 @@ def format_status(status, position) -> str:
         f"Daily PnL: `{status.daily_pnl:+.2f}`\n"
         f"Halted: `{status.halted}`\n"
         f"Uptime: `{uptime_h:.1f}h` ({status.candle_count} candles)\n\n"
+        f"*Market*\n{market_str}\n\n"
         f"*Position*\n{pos_str}"
     )
+
+
+def _sigma_bar(sigma: float) -> str:
+    """Visual bar showing distance to ±2.5σ entry threshold."""
+    clamped = max(-3.0, min(3.0, sigma))
+    pct = abs(clamped) / 2.5
+    filled = int(pct * 10)
+    return "|" + "█" * filled + "░" * (10 - filled) + "|"
 
 
 def format_pnl_summary(

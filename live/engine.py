@@ -89,6 +89,12 @@ class EngineStatus:
     candle_count: int = 0
     mode: str = "paper"
     trade_count_today: int = 0
+    # Market state
+    price: float = 0.0
+    vwap: float = 0.0
+    sigma_dist: float = 0.0
+    adx: float = 0.0
+    trend: str = ""
 
 
 class LiveEngine:
@@ -451,9 +457,14 @@ class LiveEngine:
             funding_rate=funding_rate, params=self._params,
         )
 
-        # Log market state every candle
+        # Log market state every candle and update shared status
         sig = entry_decision.signal_result
         if sig and sig.vwap_state and sig.regime:
+            self.status.price = sig.price
+            self.status.vwap = sig.vwap_state.vwap
+            self.status.sigma_dist = sig.sigma_dist
+            self.status.adx = sig.regime.adx
+            self.status.trend = sig.regime.trend_direction
             logger.info(
                 "Market: price=%.1f vwap=%.1f σ=%.2f adx=%.1f trend=%s | %s%s",
                 sig.price, sig.vwap_state.vwap, sig.sigma_dist,
@@ -745,15 +756,19 @@ class LiveEngine:
         return await asyncio.to_thread(self._client.get_balance)
 
     async def _heartbeat(self, equity: float) -> None:
-        """Periodic status log."""
+        """Periodic status log + Telegram heartbeat."""
         pos_str = "none"
         if self._position:
             pos_str = f"{self._position.side} {self._position.size_btc:.5f} BTC @ {self._position.entry_price:.1f} (hold={self._position.hold_candles})"
 
         logger.info(
-            "Heartbeat: equity=%.2f daily_pnl=%+.2f halted=%s position=%s candles=%d",
+            "Heartbeat: equity=%.2f daily_pnl=%+.2f halted=%s position=%s candles=%d σ=%.2f adx=%.1f",
             equity, self._daily_pnl, self._halted_today, pos_str, self._candle_count,
+            self.status.sigma_dist, self.status.adx,
         )
+
+        from notifications.telegram import format_status
+        await send_alert(format_status(self.status, self._position))
 
     async def _sanity_check(self) -> None:
         """Compare local position state with HL."""
