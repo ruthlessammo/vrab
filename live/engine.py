@@ -451,8 +451,18 @@ class LiveEngine:
             funding_rate=funding_rate, params=self._params,
         )
 
-        # Track signal counts
+        # Log market state every candle
         sig = entry_decision.signal_result
+        if sig and sig.vwap_state and sig.regime:
+            logger.info(
+                "Market: price=%.1f vwap=%.1f σ=%.2f adx=%.1f trend=%s | %s%s",
+                sig.price, sig.vwap_state.vwap, sig.sigma_dist,
+                sig.regime.adx, sig.regime.trend_direction,
+                entry_decision.action,
+                f" ({entry_decision.block_reason})" if entry_decision.block_reason else "",
+            )
+
+        # Track signal counts
         if sig and sig.signal in ("long_entry", "short_entry"):
             self._signals_today += 1
             if entry_decision.action == "skip" and entry_decision.block_reason:
