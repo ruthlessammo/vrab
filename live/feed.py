@@ -87,22 +87,30 @@ class CandleFeed:
 
     def _on_candle(self, msg: dict) -> None:
         """WebSocket callback — runs in the SDK's background thread."""
-        logger.debug("WS raw msg keys=%s", list(msg.keys()))
-        data = msg.get("data", {})
-        if not data:
-            logger.debug("WS msg has no 'data' key, full msg: %s", str(msg)[:500])
-            return
+        try:
+            self._process_candle_msg(msg)
+        except Exception as e:
+            logger.error("WS candle callback error: %s (msg=%s)", e, str(msg)[:500])
+
+    def _process_candle_msg(self, msg: dict) -> None:
+        """Parse and handle a candle WS message."""
+        data = msg.get("data", msg)
+
+        # SDK sends candle data as a list of candle dicts
         if isinstance(data, list):
-            logger.debug("WS data is list (len=%d), first=%s", len(data), str(data[0])[:300] if data else "empty")
-            # HL SDK sends candle updates as a list of candle dicts
-            data = data[-1] if data else {}
+            if not data:
+                return
+            data = data[-1]
+
+        if not isinstance(data, dict):
+            return
+
         tf = data.get("i", "")
         ts = int(data.get("t", 0))
 
         if tf not in (self._primary_tf, self._trend_tf):
             return
 
-        # Build candle
         candle = Candle(
             symbol=data.get("s", self._symbol),
             tf=tf,
@@ -117,18 +125,15 @@ class CandleFeed:
         # Detect candle close: new open timestamp means previous candle closed
         prev_ts = self._last_ts.get(tf, 0)
         if ts != prev_ts and prev_ts != 0:
-            # Previous candle closed — upsert and notify engine
             self._store.upsert_candles([candle])
 
             if tf == self._primary_tf and self._loop:
-                # Push closed candle event to the engine
                 self._loop.call_soon_threadsafe(
                     self._queue.put_nowait,
                     {"type": "candle_close", "tf": tf, "ts": prev_ts, "candle": candle},
                 )
-                logger.debug("Candle close: %s %s ts=%d", self._symbol, tf, prev_ts)
+                logger.info("Candle close event: %s %s ts=%d", self._symbol, tf, prev_ts)
 
-        # Always update the live candle in store (partial updates)
         self._store.upsert_candles([candle])
         self._last_ts[tf] = ts
 
