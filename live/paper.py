@@ -26,6 +26,7 @@ class PaperClient:
         self._balance = capital
         self._position: dict | None = None  # {side, size_btc, entry_price, ...}
         self._open_orders: list[dict] = []
+        self._cancelled_oids: set[int] = set()
         self._mid_price = 0.0
         self._funding_rate = 0.0001
         self._sz_decimals = 5
@@ -176,20 +177,25 @@ class PaperClient:
     def cancel_order(self, symbol: str, oid: int) -> dict:
         """Remove order from virtual order book."""
         self._open_orders = [o for o in self._open_orders if o["oid"] != oid]
+        self._cancelled_oids.add(oid)
         logger.info("PAPER cancel oid=%d", oid)
         return {"status": "ok"}
 
     def cancel_all_orders(self, symbol: str = "BTC") -> None:
         """Clear all virtual orders."""
         count = len(self._open_orders)
+        for o in self._open_orders:
+            self._cancelled_oids.add(o["oid"])
         self._open_orders.clear()
         logger.info("PAPER cancel all (%d orders)", count)
 
     def query_order_status(self, oid: int) -> dict:
-        """Check if order is still open."""
+        """Check if order is still open, cancelled, or filled."""
         for o in self._open_orders:
             if o["oid"] == oid:
                 return {"status": "open", "order": o}
+        if oid in self._cancelled_oids:
+            return {"status": "cancelled"}
         return {"status": "filled"}
 
     def schedule_cancel(self, cancel_time_ms: int) -> Any:

@@ -265,6 +265,8 @@ def evaluate_entry(
         tick_size=params.tick_size,
         slippage_ticks_entry=params.slippage_ticks_entry,
         slippage_ticks_exit=params.slippage_ticks_entry,
+        maker_rebate_rate=params.maker_rebate_rate,
+        taker_fee_rate=params.taker_fee_rate,
     )
 
     setup = TradeSetup(

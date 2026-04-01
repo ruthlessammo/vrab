@@ -64,6 +64,8 @@ def calc_round_trip_cost(
     tick_size: float,
     slippage_ticks_entry: int,
     slippage_ticks_exit: int,
+    maker_rebate_rate: float = 0.0002,
+    taker_fee_rate: float = 0.00035,
 ) -> dict:
     """Calculate full round-trip cost breakdown.
 
@@ -84,11 +86,11 @@ def calc_round_trip_cost(
 
     # Fees: positive = rebate received, negative = fee paid
     if maker_both_sides:
-        entry_fee = notional_usd * 0.0002  # rebate (positive)
-        exit_fee = notional_usd * 0.0002   # rebate (positive)
+        entry_fee = notional_usd * maker_rebate_rate
+        exit_fee = notional_usd * maker_rebate_rate
     else:
-        entry_fee = notional_usd * 0.0002   # maker entry rebate
-        exit_fee = -(notional_usd * 0.00035)  # taker exit fee
+        entry_fee = notional_usd * maker_rebate_rate
+        exit_fee = -(notional_usd * taker_fee_rate)
 
     # Funding
     funding = calc_funding_cost(side, notional_usd, hourly_funding_rate, hold_hours)
@@ -116,6 +118,8 @@ def calc_break_even_move(
     hold_hours: float,
     tick_size: float,
     slippage_ticks: int,
+    maker_rebate_rate: float = 0.0002,
+    taker_fee_rate: float = 0.00035,
 ) -> float:
     """Minimum price move in USD for trade to break even after all costs.
 
@@ -128,9 +132,9 @@ def calc_break_even_move(
 
     # Fee cost
     if maker_both_sides:
-        fee_cost = -(2 * notional_usd * 0.0002)  # rebates reduce cost
+        fee_cost = -(2 * notional_usd * maker_rebate_rate)
     else:
-        fee_cost = -(notional_usd * 0.0002) + notional_usd * 0.00035
+        fee_cost = -(notional_usd * maker_rebate_rate) + notional_usd * taker_fee_rate
 
     # Funding cost magnitude
     funding = calc_funding_cost(side, notional_usd, hourly_funding_rate, hold_hours)

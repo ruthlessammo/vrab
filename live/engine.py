@@ -479,6 +479,13 @@ class LiveEngine:
             status = self._client.query_order_status(oid)
             is_filled = status.get("status") == "filled"
 
+        if status.get("status") == "cancelled":
+            logger.info("Entry order cancelled (oid=%d)", oid)
+            self._pending_entry = None
+            self._pending_signal_dir = None
+            self._pending_signal_count = 0
+            return
+
         if is_filled:
             await self._on_entry_filled(self._pending_entry, candle_ts)
             self._pending_entry = None
@@ -680,24 +687,38 @@ class LiveEngine:
         # Place exit order
         is_close_buy = pos.side == "short"
         if ea.is_maker:
-            await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._client.place_limit_order,
                 SYMBOL, is_close_buy, pos.size_btc, ea.exit_price,
                 reduce_only=True, post_only=False,
             )
         else:
-            await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._client.place_market_order,
                 SYMBOL, is_close_buy, pos.size_btc,
                 reduce_only=True,
             )
+
+        # Use actual fill price from HL when available (market orders have slippage)
+        exit_price = ea.exit_price
+        if not PAPER_MODE:
+            actual_price = self._extract_fill_price(result)
+            if actual_price:
+                exit_price = actual_price
+                logger.info("Actual fill price: %.1f (theoretical: %.1f)", actual_price, ea.exit_price)
+
+        # Belt-and-suspenders: cancel any remaining orders after exit
+        try:
+            await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
+        except Exception as e:
+            logger.warning("Post-exit cancel_all failed: %s", e)
 
         # Calculate PnL
         hold_hours = (candle_ts - pos.entry_ts) / 3_600_000
         pnl_result = calc_trade_pnl(
             side=pos.side,
             entry_price=pos.entry_price,
-            exit_price=ea.exit_price,
+            exit_price=exit_price,
             size_usd=pos.size_usd,
             equity=pos.equity_at_entry,
             leverage=self._params.target_leverage,
@@ -711,7 +732,7 @@ class LiveEngine:
             symbol=SYMBOL,
             side=pos.side,
             entry_price=pos.entry_price,
-            exit_price=ea.exit_price,
+            exit_price=exit_price,
             size_usd=pos.size_usd,
             notional_usd=pos.size_usd,
             leverage=self._params.target_leverage,
@@ -870,6 +891,21 @@ class LiveEngine:
         except (KeyError, IndexError, TypeError):
             pass
         logger.warning("Could not extract oid from: %s", result)
+        return None
+
+    @staticmethod
+    def _extract_fill_price(result: dict) -> float | None:
+        """Extract average fill price from SDK response."""
+        try:
+            resp = result.get("response", {})
+            data = resp.get("data", resp) if isinstance(resp, dict) else {}
+            statuses = data.get("statuses", [])
+            if statuses:
+                first = statuses[0]
+                if "filled" in first:
+                    return float(first["filled"]["avgPx"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
         return None
 
 
