@@ -79,23 +79,58 @@ class PendingEntry:
     entry_ts: int
 
 
-@dataclass
 class EngineStatus:
-    """Shared status object — read by the Telegram bot."""
-    position: PositionState | None = None
-    equity: float = 0.0
-    daily_pnl: float = 0.0
-    halted: bool = False
-    uptime_seconds: float = 0.0
-    candle_count: int = 0
-    mode: str = "paper"
-    trade_count_today: int = 0
-    # Market state
-    price: float = 0.0
-    vwap: float = 0.0
-    sigma_dist: float = 0.0
-    adx: float = 0.0
-    trend: str = ""
+    """Shared status object — read by the Telegram bot.
+
+    Reads position, equity, daily_pnl, and halted live from the engine
+    so /status always reflects current state without manual syncing.
+    """
+
+    def __init__(self, mode: str = "paper"):
+        self._engine: "LiveEngine | None" = None
+        self.mode = mode
+        # Market state (updated each candle by engine)
+        self.price: float = 0.0
+        self.vwap: float = 0.0
+        self.sigma_dist: float = 0.0
+        self.adx: float = 0.0
+        self.trend: str = ""
+
+    def bind(self, engine: "LiveEngine") -> None:
+        """Bind to engine for live reads."""
+        self._engine = engine
+
+    @property
+    def position(self) -> PositionState | None:
+        return self._engine._position if self._engine else None
+
+    @property
+    def equity(self) -> float:
+        if not self._engine:
+            return 0.0
+        return self._engine._daily_start_equity + self._engine._daily_pnl
+
+    @property
+    def daily_pnl(self) -> float:
+        return self._engine._daily_pnl if self._engine else 0.0
+
+    @property
+    def halted(self) -> bool:
+        if not self._engine:
+            return False
+        return self._engine._halted_today or self._engine._circuit_breaker
+
+    @property
+    def uptime_seconds(self) -> float:
+        return time.time() - self._engine._start_time if self._engine else 0.0
+
+    @property
+    def candle_count(self) -> int:
+        return self._engine._candle_count if self._engine else 0
+
+    @property
+    def trade_count_today(self) -> int:
+        return self._engine._trade_count_today if self._engine else 0
 
 
 class LiveEngine:
@@ -136,6 +171,7 @@ class LiveEngine:
 
         # Shared status for Telegram bot
         self.status = EngineStatus(mode=SOURCE)
+        self.status.bind(self)
 
         # Shutdown flag
         self._shutdown = False
@@ -442,15 +478,6 @@ class LiveEngine:
 
         # --- Cache equity for this candle (single call) ---
         equity = await self._get_equity()
-
-        # --- Update shared status for Telegram bot ---
-        self.status.position = self._position
-        self.status.equity = equity
-        self.status.daily_pnl = self._daily_pnl
-        self.status.halted = self._halted_today or self._circuit_breaker
-        self.status.uptime_seconds = time.time() - self._start_time
-        self.status.candle_count = self._candle_count
-        self.status.trade_count_today = self._trade_count_today
 
         # --- Circuit breaker: track peak equity, halt on excessive drawdown ---
         if equity > self._peak_equity:
