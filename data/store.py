@@ -223,6 +223,11 @@ class Store:
                     signals_blocked INTEGER DEFAULT 0,
                     PRIMARY KEY (date, symbol, source)
                 );
+
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
             """)
             self._conn.commit()
 
@@ -475,6 +480,23 @@ class Store:
             "Reconciled daily state: pnl=%.2f trades=%d",
             daily_pnl, len(trades),
         )
+
+    def get_meta(self, key: str) -> str | None:
+        """Read a persistent key-value pair."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Write a persistent key-value pair."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""

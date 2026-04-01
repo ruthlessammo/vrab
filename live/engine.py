@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from config import (
     CAPITAL_USDC, DB_PATH, SYMBOL, CANDLE_TF, TREND_TF,
     TARGET_LEVERAGE, RISK_PER_TRADE,
-    MAX_DAILY_LOSS_MULTIPLIER,
+    MAX_DAILY_LOSS_MULTIPLIER, MAX_DRAWDOWN_PCT,
     PAPER_MODE,
     HL_PRIVATE_KEY, HL_BASE_URL, HL_WALLET_ADDRESS,
     CANDLE_BACKFILL_COUNT, HEARTBEAT_INTERVAL_CANDLES,
@@ -125,6 +125,10 @@ class LiveEngine:
         # Pending entry order
         self._pending_entry: PendingEntry | None = None
 
+        # Circuit breaker (persists across days and restarts)
+        self._peak_equity: float = CAPITAL_USDC
+        self._circuit_breaker: bool = False
+
         # Candle counter for periodic tasks
         self._candle_count: int = 0
         self._start_time: float = time.time()
@@ -171,7 +175,7 @@ class LiveEngine:
             await self._refresh_deadman()
 
         # Step 4: Start Telegram bot
-        bot = TelegramBot(self._store, self.status)
+        bot = TelegramBot(self._store, self.status, engine=self)
         bot_task = asyncio.create_task(bot.run())
 
         await send_alert(f"*VRAB Started*\nMode: `{'paper' if PAPER_MODE else 'LIVE'}`\nSymbol: `{SYMBOL}`")
@@ -241,6 +245,15 @@ class LiveEngine:
         self._halted_today = hot.halted
         self._current_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+        # Load circuit breaker state
+        peak = self._store.get_meta("peak_equity")
+        if peak:
+            self._peak_equity = float(peak)
+        self._circuit_breaker = self._store.get_meta("circuit_breaker") == "1"
+        if self._circuit_breaker:
+            logger.warning("Circuit breaker ACTIVE from previous session (peak=%.2f)", self._peak_equity)
+            await send_alert(f"*CIRCUIT BREAKER ACTIVE*\nPeak equity: `${self._peak_equity:.2f}`\nSend /reset to resume trading")
+
         if PAPER_MODE:
             logger.info("Paper mode — no position reconciliation needed")
             return
@@ -301,10 +314,35 @@ class LiveEngine:
         self.status.position = self._position
         self.status.equity = equity
         self.status.daily_pnl = self._daily_pnl
-        self.status.halted = self._halted_today
+        self.status.halted = self._halted_today or self._circuit_breaker
         self.status.uptime_seconds = time.time() - self._start_time
         self.status.candle_count = self._candle_count
         self.status.trade_count_today = self._trade_count_today
+
+        # --- Circuit breaker: track peak equity, halt on excessive drawdown ---
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+            self._store.set_meta("peak_equity", str(equity))
+
+        if self._circuit_breaker:
+            return
+
+        if self._peak_equity > 0:
+            dd_from_peak = (self._peak_equity - equity) / self._peak_equity
+            if dd_from_peak >= MAX_DRAWDOWN_PCT:
+                self._circuit_breaker = True
+                self._store.set_meta("circuit_breaker", "1")
+                logger.warning(
+                    "CIRCUIT BREAKER: dd=%.2f%% peak=%.2f equity=%.2f",
+                    dd_from_peak * 100, self._peak_equity, equity,
+                )
+                await send_alert(
+                    f"*CIRCUIT BREAKER TRIGGERED*\n"
+                    f"Drawdown: `{dd_from_peak:.2%}` from peak `${self._peak_equity:.2f}`\n"
+                    f"Current equity: `${equity:.2f}`\n"
+                    f"Send /reset to resume trading"
+                )
+                return
 
         # --- Periodic tasks (run regardless of position state) ---
         if self._candle_count % HEARTBEAT_INTERVAL_CANDLES == 0:

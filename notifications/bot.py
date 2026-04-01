@@ -3,7 +3,7 @@
 Runs as a background task in the engine's event loop.
 Only responds to messages from the configured TELEGRAM_CHAT_ID.
 
-Commands: /status, /pnl, /equity, /trades, /kill
+Commands: /status, /pnl, /equity, /trades, /kill, /reset
 """
 
 import asyncio
@@ -29,14 +29,16 @@ logger = logging.getLogger(__name__)
 class TelegramBot:
     """Long-polling Telegram bot for remote status queries."""
 
-    def __init__(self, store: Store, engine_status):
+    def __init__(self, store: Store, engine_status, engine=None):
         """
         Args:
             store: Data store for trade/PnL queries.
             engine_status: Shared EngineStatus dataclass updated by the engine.
+            engine: LiveEngine instance (for circuit breaker reset).
         """
         self._store = store
         self._status = engine_status
+        self._engine = engine
         self._offset = 0  # Telegram update offset for polling
         self._running = False
         self._session: aiohttp.ClientSession | None = None
@@ -115,6 +117,7 @@ class TelegramBot:
             "/equity": self._cmd_equity,
             "/trades": self._cmd_trades,
             "/kill": self._cmd_kill,
+            "/reset": self._cmd_reset,
         }
 
         handler = handlers.get(cmd)
@@ -132,7 +135,8 @@ class TelegramBot:
                 "/pnl — PnL summary\n"
                 "/equity — Total equity\n"
                 "/trades — Recent trades\n"
-                "/kill — Emergency stop"
+                "/kill — Emergency stop\n"
+                "/reset — Clear circuit breaker"
             )
 
     async def _cmd_status(self) -> str:
@@ -182,3 +186,15 @@ class TelegramBot:
         Path(KILL_SWITCH_PATH).touch()
         logger.warning("Kill switch activated via Telegram")
         return "*KILL SWITCH ACTIVATED*\nEngine will halt on next candle."
+
+    async def _cmd_reset(self) -> str:
+        """Handle /reset command — clear circuit breaker, reset peak equity."""
+        if not self._engine:
+            return "*Error*: Engine reference not available"
+        equity = self._status.equity
+        self._engine._circuit_breaker = False
+        self._engine._peak_equity = equity
+        self._store.set_meta("circuit_breaker", "0")
+        self._store.set_meta("peak_equity", str(equity))
+        logger.warning("Circuit breaker reset via Telegram (peak=%.2f)", equity)
+        return f"*Circuit Breaker Reset*\nPeak equity set to `${equity:.2f}`\nTrading resumed."

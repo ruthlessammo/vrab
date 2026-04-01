@@ -54,6 +54,7 @@ ADX_THRESHOLD = 35.0            # sweep: 35 (was 30, allows mildly trending setu
 # Risk
 # ---------------------------------------------------------------------------
 MAX_DAILY_LOSS_MULTIPLIER = 3   # halt after 3× single-trade risk loss in a day
+MAX_DRAWDOWN_PCT = 0.10         # 10% from peak equity → circuit breaker
 MAX_POSITION_HOLD_MINS = 240
 MAX_OPEN_POSITIONS = 1
 NEWS_BUFFER_MINS = 5
