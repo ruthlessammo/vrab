@@ -198,6 +198,15 @@ class LiveEngine:
                     no_event_count = 0
                 continue
 
+            # Real-time paper fill checking on every WS tick (~1s)
+            if event.get("type") == "tick":
+                if PAPER_MODE and self._pending_entry:
+                    self._client.set_mid_price(event["price"])
+                    filled = self._client.check_fills(event["high"], event["low"])
+                    for fill in filled:
+                        await self._on_paper_fill(fill, candle_ts=0)
+                continue
+
             if event.get("type") != "candle_close":
                 continue
 
@@ -327,10 +336,13 @@ class LiveEngine:
         t_highs = [c.high for c in trend_candles[trend_start:trend_idx]]
         t_lows = [c.low for c in trend_candles[trend_start:trend_idx]]
 
-        # --- Update paper client mid price ---
+        # --- Belt-and-suspenders: check paper fills at candle close using closed candle's full range ---
         if PAPER_MODE:
+            closed = event.get("closed_candle")
+            check_high = closed.high if closed else candle.high
+            check_low = closed.low if closed else candle.low
             self._client.set_mid_price(candle.close)
-            filled = self._client.check_fills(candle.high, candle.low)
+            filled = self._client.check_fills(check_high, check_low)
             for fill in filled:
                 await self._on_paper_fill(fill, candle_ts)
 

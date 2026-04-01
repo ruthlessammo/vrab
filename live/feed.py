@@ -42,6 +42,7 @@ class CandleFeed:
 
         # Track the latest candle open timestamp to detect closes
         self._last_ts: dict[str, int] = {}
+        self._last_candle: dict[str, Candle] = {}
         self._last_msg_time: float = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._sub_ids: list[int] = []
@@ -136,13 +137,23 @@ class CandleFeed:
             self._store.upsert_candles([candle])
 
             if tf == self._primary_tf and self._loop:
+                closed_candle = self._last_candle.get(tf)
                 self._loop.call_soon_threadsafe(
                     self._queue.put_nowait,
-                    {"type": "candle_close", "tf": tf, "ts": prev_ts, "candle": candle},
+                    {"type": "candle_close", "tf": tf, "ts": prev_ts,
+                     "candle": candle, "closed_candle": closed_candle},
                 )
                 logger.info("Candle close event: %s %s ts=%d", self._symbol, tf, prev_ts)
 
+        # Push tick event for real-time paper fill checking (~1s updates)
+        if tf == self._primary_tf and self._loop:
+            self._loop.call_soon_threadsafe(
+                self._queue.put_nowait,
+                {"type": "tick", "high": candle.high, "low": candle.low, "price": candle.close},
+            )
+
         self._store.upsert_candles([candle])
+        self._last_candle[tf] = candle
         self._last_ts[tf] = ts
 
     def subscribe(self, loop: asyncio.AbstractEventLoop) -> None:
