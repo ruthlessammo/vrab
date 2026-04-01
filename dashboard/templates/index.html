@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VRAB Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -221,7 +221,8 @@ function updateStatus(data) {
 
   if (data.daily_pnl) {
     const dp = data.daily_pnl;
-    const eq = dp.end_equity || dp.start_equity || '--';
+    const eq = dp.start_equity != null && dp.pnl_usd != null
+      ? dp.start_equity + dp.pnl_usd : dp.end_equity || dp.start_equity || '--';
     document.getElementById('st-equity').textContent = typeof eq === 'number' ? '$' + eq.toFixed(2) : eq;
 
     const pnl = dp.pnl_usd;
@@ -365,15 +366,21 @@ async function pollData() {
     'Updated: ' + new Date().toLocaleTimeString();
 }
 
-// Initial load
-pollMarket();
-pollStatus();
-pollData();
+// Initial load — wait for DOM and Chart.js
+function init() {
+  pollMarket();
+  pollStatus();
+  pollData();
+  setInterval(pollMarket, 5000);
+  setInterval(pollStatus, 30000);
+  setInterval(pollData, 60000);
+}
 
-// Intervals
-setInterval(pollMarket, 5000);
-setInterval(pollStatus, 30000);
-setInterval(pollData, 60000);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 </script>
 </body>
 </html>

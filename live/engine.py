@@ -8,10 +8,11 @@ CLI: python -m live.engine
 
 import asyncio
 import bisect
+import json
 import logging
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 from config import (
@@ -237,6 +238,130 @@ class LiveEngine:
         from hyperliquid.info import Info
         return Info(base_url=HL_BASE_URL, skip_ws=False)
 
+    def _save_position_state(self) -> None:
+        """Persist open position to meta table as JSON."""
+        if self._position:
+            self._store.set_meta("open_position", json.dumps(asdict(self._position)))
+        else:
+            self._clear_position_state()
+
+    def _clear_position_state(self) -> None:
+        """Clear persisted position from meta table."""
+        self._store.set_meta("open_position", "")
+
+    async def _restore_position(self) -> None:
+        """Restore position state from meta table on startup."""
+        raw = self._store.get_meta("open_position")
+        if not raw:
+            return
+
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Invalid saved position data, clearing")
+            self._clear_position_state()
+            return
+
+        saved = PositionState(**data)
+
+        if PAPER_MODE:
+            # Restore paper client's internal position
+            self._client._position = {
+                "side": saved.side,
+                "size_btc": saved.size_btc,
+                "entry_price": saved.entry_price,
+                "liq_price": saved.liq_price,
+                "unrealized_pnl": 0.0,
+            }
+            # Re-place stop and target orders
+            is_stop_buy = saved.side == "short"
+            result = self._client.place_trigger_order(
+                SYMBOL, is_stop_buy, saved.size_btc, saved.stop_price, tpsl="sl",
+            )
+            saved.stop_oid = self._extract_oid(result)
+
+            is_tp_buy = saved.side == "short"
+            result = self._client.place_limit_order(
+                SYMBOL, is_tp_buy, saved.size_btc, saved.target_price,
+                reduce_only=True, post_only=True,
+            )
+            saved.target_oid = self._extract_oid(result)
+
+            self._position = saved
+            logger.info(
+                "Recovered paper position: %s %.5f BTC @ %.1f | stop=%.1f target=%.1f",
+                saved.side, saved.size_btc, saved.entry_price, saved.stop_price, saved.target_price,
+            )
+            await send_alert(
+                f"*Position Recovered*\n"
+                f"Side: `{saved.side}`\n"
+                f"Entry: `{saved.entry_price:.1f}`\n"
+                f"Stop: `{saved.stop_price:.1f}` | Target: `{saved.target_price:.1f}`\n"
+                f"Size: `{saved.size_btc:.5f}` BTC"
+            )
+            return
+
+        # Live mode: cross-check with HL
+        hl_pos = await asyncio.to_thread(self._client.get_position, SYMBOL)
+
+        if not hl_pos:
+            # Saved position but HL has nothing — position was closed externally
+            logger.warning("Saved position found but HL has no position — clearing stale state")
+            self._clear_position_state()
+            await send_alert("*Position Recovery*: Saved state found but no HL position — cleared stale data")
+            return
+
+        # HL has a position — check if it matches saved state
+        if hl_pos["side"] != saved.side:
+            logger.warning(
+                "Position side mismatch: saved=%s, HL=%s — NOT auto-managing",
+                saved.side, hl_pos["side"],
+            )
+            self._clear_position_state()
+            await send_alert(
+                f"*WARNING*: Position side mismatch (saved={saved.side}, HL={hl_pos['side']}). "
+                f"Cleared saved state. Manage HL position manually."
+            )
+            return
+
+        # Sides match — restore local state with HL's actual size/entry
+        saved.size_btc = hl_pos["size_btc"]
+        saved.entry_price = hl_pos["entry_price"]
+        saved.liq_price = hl_pos.get("liq_price", saved.liq_price)
+
+        # Cancel stale orders, re-place stop and target
+        await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
+
+        is_stop_buy = saved.side == "short"
+        result = await asyncio.to_thread(
+            self._client.place_trigger_order,
+            SYMBOL, is_stop_buy, saved.size_btc, saved.stop_price, tpsl="sl",
+        )
+        saved.stop_oid = self._extract_oid(result)
+
+        is_tp_buy = saved.side == "short"
+        result = await asyncio.to_thread(
+            self._client.place_limit_order,
+            SYMBOL, is_tp_buy, saved.size_btc, saved.target_price,
+            reduce_only=True, post_only=True,
+        )
+        saved.target_oid = self._extract_oid(result)
+
+        self._position = saved
+        self._save_position_state()
+
+        logger.info(
+            "Recovered live position: %s %.5f BTC @ %.1f | stop=%.1f target=%.1f",
+            saved.side, saved.size_btc, saved.entry_price, saved.stop_price, saved.target_price,
+        )
+        await send_alert(
+            f"*Position Recovered*\n"
+            f"Side: `{saved.side}`\n"
+            f"Entry: `{saved.entry_price:.1f}` (from HL)\n"
+            f"Stop: `{saved.stop_price:.1f}` | Target: `{saved.target_price:.1f}`\n"
+            f"Size: `{saved.size_btc:.5f}` BTC"
+        )
+
     async def _reconcile(self) -> None:
         """Startup reconciliation — sync local state with exchange."""
         self._store.reconcile_daily_state(CAPITAL_USDC)
@@ -254,11 +379,19 @@ class LiveEngine:
             logger.warning("Circuit breaker ACTIVE from previous session (peak=%.2f)", self._peak_equity)
             await send_alert(f"*CIRCUIT BREAKER ACTIVE*\nPeak equity: `${self._peak_equity:.2f}`\nSend /reset to resume trading")
 
-        if PAPER_MODE:
-            logger.info("Paper mode — no position reconciliation needed")
+        # Restore position from persisted state
+        await self._restore_position()
+
+        if self._position:
+            # Position was recovered — skip the rest of reconciliation
+            logger.info("Reconciliation complete (position recovered)")
             return
 
-        # Check HL for existing position
+        if PAPER_MODE:
+            logger.info("Paper mode — no position to recover")
+            return
+
+        # No saved position — check HL for orphaned positions
         hl_pos = await asyncio.to_thread(self._client.get_position, SYMBOL)
         if hl_pos:
             logger.warning(
@@ -663,6 +796,9 @@ class LiveEngine:
         )
         self._position.target_oid = self._extract_oid(result)
 
+        # Persist position state for recovery across restarts
+        self._save_position_state()
+
         logger.info(
             "Position opened: %s %.5f BTC @ %.1f | stop=%.1f target=%.1f",
             setup.side, size_btc, setup.entry_price, setup.stop_price, setup.target_price,
@@ -756,6 +892,10 @@ class LiveEngine:
         self._daily_pnl += trade.net_pnl
         self._trade_count_today += 1
 
+        # Sync paper client balance to match cost-adjusted equity
+        if PAPER_MODE:
+            self._client._balance = self._daily_start_equity + self._daily_pnl
+
         # Track max drawdown from daily start equity
         current_equity = await self._get_equity()
         if self._daily_start_equity > 0:
@@ -793,8 +933,9 @@ class LiveEngine:
         )
         await send_alert(format_trade_alert(trade))
 
-        # Reset position
+        # Reset position and clear persisted state
         self._position = None
+        self._clear_position_state()
 
     async def _emergency_close(self, reason: str) -> None:
         """Emergency close — market order, no PnL calc."""
@@ -813,6 +954,7 @@ class LiveEngine:
         logger.warning("Emergency close: %s (reason=%s)", pos.side, reason)
         await send_alert(f"*EMERGENCY CLOSE*\nSide: `{pos.side}`\nReason: `{reason}`")
         self._position = None
+        self._clear_position_state()
 
     async def _on_paper_fill(self, fill: dict, candle_ts: int) -> None:
         """Handle a paper mode limit order fill."""

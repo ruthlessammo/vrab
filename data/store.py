@@ -89,9 +89,13 @@ class Trade:
 
     @property
     def net_pnl(self) -> float:
-        """Net PnL including all costs."""
+        """Net PnL including all costs.
+
+        entry_fee_usd and exit_fee_usd already contain maker rebates (positive)
+        or taker fees (negative). maker_rebate_usd is informational only.
+        """
         return (self.pnl_usd + self.slippage_usd + self.entry_fee_usd
-                + self.exit_fee_usd + self.funding_usd + self.maker_rebate_usd)
+                + self.exit_fee_usd + self.funding_usd)
 
 
 @dataclass
