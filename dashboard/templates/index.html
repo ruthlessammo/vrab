@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VRAB Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117; color: #c9d1d9; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px; padding: 16px;
+  }
+  h1 { font-size: 16px; color: #58a6ff; margin-bottom: 12px; }
+  h2 { font-size: 14px; color: #8b949e; margin: 16px 0 8px; }
+
+  /* Status bar */
+  .status-bar {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 12px 16px; margin-bottom: 16px;
+  }
+  .status-item { display: flex; flex-direction: column; }
+  .status-label { color: #8b949e; font-size: 11px; text-transform: uppercase; }
+  .status-value { font-size: 15px; font-weight: bold; margin-top: 2px; }
+  .status-value.green { color: #3fb950; }
+  .status-value.red { color: #f85149; }
+  .status-value.yellow { color: #d29922; }
+
+  /* Sigma bar */
+  .sigma-container {
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .sigma-header {
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;
+  }
+  .sigma-track {
+    position: relative; height: 32px; background: #21262d; border-radius: 4px;
+    overflow: hidden;
+  }
+  .sigma-zone {
+    position: absolute; top: 0; bottom: 0; opacity: 0.15;
+  }
+  .sigma-zone.entry-left { left: 0; background: #f85149; }
+  .sigma-zone.entry-right { right: 0; background: #f85149; }
+  .sigma-zone.warn-left { background: #d29922; }
+  .sigma-zone.warn-right { background: #d29922; }
+  .sigma-needle {
+    position: absolute; top: 2px; bottom: 2px; width: 4px;
+    background: #f0f6fc; border-radius: 2px; transition: left 0.5s ease;
+  }
+  .sigma-labels {
+    display: flex; justify-content: space-between; margin-top: 4px;
+    color: #484f58; font-size: 11px;
+  }
+  .sigma-center { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #30363d; }
+  .sigma-mark {
+    position: absolute; top: 0; bottom: 0; width: 1px; background: #f8514950;
+  }
+  .sigma-info {
+    display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: #8b949e;
+  }
+  .sigma-info span { color: #c9d1d9; }
+
+  /* Charts */
+  .chart-row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .chart-box {
+    flex: 1; min-width: 300px;
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px;
+  }
+
+  /* Stats */
+  .stats-row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat-card {
+    flex: 1; min-width: 100px; text-align: center;
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px;
+  }
+  .stat-card .val { font-size: 18px; font-weight: bold; }
+  .stat-card .lbl { font-size: 11px; color: #8b949e; margin-top: 4px; }
+
+  /* Trade table */
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: #8b949e; font-size: 11px; text-transform: uppercase;
+       padding: 6px 8px; border-bottom: 1px solid #30363d; }
+  td { padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  tr.win td { color: #3fb950; }
+  tr.loss td { color: #f85149; }
+  .table-box {
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 12px; overflow-x: auto;
+  }
+  .updated { font-size: 11px; color: #484f58; text-align: right; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>VRAB Dashboard</h1>
+
+<!-- Status Bar -->
+<div class="status-bar" id="status-bar">
+  <div class="status-item"><span class="status-label">Mode</span><span class="status-value" id="st-mode">--</span></div>
+  <div class="status-item"><span class="status-label">Status</span><span class="status-value" id="st-status">--</span></div>
+  <div class="status-item"><span class="status-label">Equity</span><span class="status-value" id="st-equity">--</span></div>
+  <div class="status-item"><span class="status-label">Daily PnL</span><span class="status-value" id="st-daily">--</span></div>
+  <div class="status-item"><span class="status-label">Trades Today</span><span class="status-value" id="st-trades">--</span></div>
+  <div class="status-item"><span class="status-label">Uptime</span><span class="status-value" id="st-uptime">--</span></div>
+</div>
+
+<!-- Sigma Bar -->
+<div class="sigma-container">
+  <div class="sigma-header">
+    <h2 style="margin:0">Market State</h2>
+    <span id="sigma-price" style="font-size:15px;font-weight:bold">--</span>
+  </div>
+  <div class="sigma-track" id="sigma-track">
+    <div class="sigma-zone entry-left" id="zone-left"></div>
+    <div class="sigma-zone warn-left" id="zone-warn-left"></div>
+    <div class="sigma-center"></div>
+    <div class="sigma-zone warn-right" id="zone-warn-right"></div>
+    <div class="sigma-zone entry-right" id="zone-right"></div>
+    <div class="sigma-mark" id="mark-left"></div>
+    <div class="sigma-mark" id="mark-right"></div>
+    <div class="sigma-needle" id="sigma-needle"></div>
+  </div>
+  <div class="sigma-labels">
+    <span>-3.0&sigma;</span><span>-2.5&sigma;</span><span>-1.5&sigma;</span>
+    <span>0</span>
+    <span>+1.5&sigma;</span><span>+2.5&sigma;</span><span>+3.0&sigma;</span>
+  </div>
+  <div class="sigma-info">
+    <div>&sigma;: <span id="sigma-val">--</span></div>
+    <div>VWAP: <span id="sigma-vwap">--</span></div>
+    <div>ADX: <span id="sigma-adx">--</span></div>
+    <div>Trend: <span id="sigma-trend">--</span></div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div class="stats-row" id="stats-row">
+  <div class="stat-card"><div class="val" id="stat-pnl">--</div><div class="lbl">Total PnL</div></div>
+  <div class="stat-card"><div class="val" id="stat-trades">--</div><div class="lbl">Trades</div></div>
+  <div class="stat-card"><div class="val" id="stat-wr">--</div><div class="lbl">Win Rate</div></div>
+  <div class="stat-card"><div class="val" id="stat-avgwin">--</div><div class="lbl">Avg Win</div></div>
+  <div class="stat-card"><div class="val" id="stat-avgloss">--</div><div class="lbl">Avg Loss</div></div>
+</div>
+
+<!-- Charts -->
+<div class="chart-row">
+  <div class="chart-box"><h2>Equity Curve</h2><canvas id="equity-chart"></canvas></div>
+  <div class="chart-box"><h2>Daily PnL</h2><canvas id="daily-chart"></canvas></div>
+</div>
+
+<!-- Trades Table -->
+<h2>Recent Trades</h2>
+<div class="table-box">
+  <table>
+    <thead><tr>
+      <th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Return</th><th>Hold</th><th>Reason</th>
+    </tr></thead>
+    <tbody id="trades-body"></tbody>
+  </table>
+</div>
+<div class="updated" id="last-updated"></div>
+
+<script>
+const SIGMA_MAX = 3.0;
+const ENTRY_SIGMA = 2.5;
+
+let equityChart = null;
+let dailyChart = null;
+
+// -- Sigma bar --
+function updateSigmaBar(data) {
+  if (!data || !data.price) return;
+
+  document.getElementById('sigma-price').textContent = '$' + data.price.toFixed(1);
+  document.getElementById('sigma-val').textContent = (data.sigma_dist >= 0 ? '+' : '') + data.sigma_dist.toFixed(2);
+  document.getElementById('sigma-vwap').textContent = '$' + data.vwap.toFixed(1);
+  document.getElementById('sigma-adx').textContent = data.adx.toFixed(1);
+  document.getElementById('sigma-trend').textContent = data.trend_direction || '--';
+
+  // Needle position: map [-3, +3] to [0%, 100%]
+  const sigma = Math.max(-SIGMA_MAX, Math.min(SIGMA_MAX, data.sigma_dist));
+  const pct = ((sigma + SIGMA_MAX) / (2 * SIGMA_MAX)) * 100;
+  document.getElementById('sigma-needle').style.left = `calc(${pct}% - 2px)`;
+
+  // Entry zones: 0 to entry/max of track
+  const entryPct = (ENTRY_SIGMA / SIGMA_MAX) * 50;
+  const warnPct = (1.5 / SIGMA_MAX) * 50;
+
+  // Left zones (negative sigma)
+  document.getElementById('zone-left').style.width = (50 - entryPct) + '%';
+  document.getElementById('zone-warn-left').style.left = (50 - entryPct) + '%';
+  document.getElementById('zone-warn-left').style.width = (entryPct - warnPct) + '%';
+
+  // Right zones (positive sigma)
+  document.getElementById('zone-right').style.width = (50 - entryPct) + '%';
+  document.getElementById('zone-warn-right').style.right = (50 - entryPct) + '%';
+  document.getElementById('zone-warn-right').style.width = (entryPct - warnPct) + '%';
+
+  // Entry threshold marks
+  document.getElementById('mark-left').style.left = (50 - entryPct) + '%';
+  document.getElementById('mark-right').style.left = (50 + entryPct) + '%';
+
+  // Color the sigma value
+  const el = document.getElementById('sigma-val');
+  const absSigma = Math.abs(data.sigma_dist);
+  if (absSigma >= ENTRY_SIGMA) { el.style.color = '#f85149'; }
+  else if (absSigma >= 1.5) { el.style.color = '#d29922'; }
+  else { el.style.color = '#3fb950'; }
+}
+
+// -- Status bar --
+function updateStatus(data) {
+  if (!data) return;
+  document.getElementById('st-mode').textContent = data.mode || '--';
+  const statusEl = document.getElementById('st-status');
+  statusEl.textContent = data.circuit_breaker ? 'CIRCUIT BREAKER' : data.status;
+  statusEl.className = 'status-value ' + (data.status === 'running' && !data.circuit_breaker ? 'green' : 'red');
+
+  if (data.daily_pnl) {
+    const dp = data.daily_pnl;
+    const eq = dp.end_equity || dp.start_equity || '--';
+    document.getElementById('st-equity').textContent = typeof eq === 'number' ? '$' + eq.toFixed(2) : eq;
+
+    const pnl = dp.pnl_usd;
+    const pnlEl = document.getElementById('st-daily');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+    pnlEl.className = 'status-value ' + (pnl >= 0 ? 'green' : 'red');
+
+    document.getElementById('st-trades').textContent = dp.trade_count || 0;
+  }
+
+  const hrs = (data.uptime_seconds / 3600).toFixed(1);
+  document.getElementById('st-uptime').textContent = hrs + 'h';
+}
+
+// -- Charts --
+function updateCharts(dailyData) {
+  if (!dailyData || !dailyData.length) return;
+
+  const sorted = [...dailyData].reverse();
+  const labels = sorted.map(d => d.date);
+  const pnls = sorted.map(d => d.pnl_usd);
+  const equities = sorted.map(d => d.end_equity).filter(e => e != null);
+  const eqLabels = sorted.filter(d => d.end_equity != null).map(d => d.date);
+
+  // Equity chart
+  const eqCtx = document.getElementById('equity-chart').getContext('2d');
+  if (equityChart) equityChart.destroy();
+  equityChart = new Chart(eqCtx, {
+    type: 'line',
+    data: {
+      labels: eqLabels,
+      datasets: [{
+        data: equities, borderColor: '#58a6ff', backgroundColor: '#58a6ff20',
+        fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2,
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#484f58', font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#484f58', font: { size: 10 }, callback: v => '$' + v }, grid: { color: '#21262d' } },
+      }
+    }
+  });
+
+  // Daily PnL chart
+  const dpCtx = document.getElementById('daily-chart').getContext('2d');
+  if (dailyChart) dailyChart.destroy();
+  dailyChart = new Chart(dpCtx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: pnls,
+        backgroundColor: pnls.map(v => v >= 0 ? '#3fb95080' : '#f8514980'),
+        borderColor: pnls.map(v => v >= 0 ? '#3fb950' : '#f85149'),
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#484f58', font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#484f58', font: { size: 10 }, callback: v => '$' + v }, grid: { color: '#21262d' } },
+      }
+    }
+  });
+}
+
+// -- Trade table + stats --
+function updateTrades(trades) {
+  if (!trades) return;
+  const tbody = document.getElementById('trades-body');
+  tbody.innerHTML = '';
+
+  let totalPnl = 0, wins = 0, winSum = 0, lossSum = 0, losses = 0;
+
+  trades.forEach(t => {
+    const pnl = t.net_pnl_usd || t.net_pnl || 0;
+    const ret = t.equity_return_pct || 0;
+    totalPnl += pnl;
+    if (pnl > 0) { wins++; winSum += pnl; }
+    else { losses++; lossSum += pnl; }
+
+    const tr = document.createElement('tr');
+    tr.className = pnl >= 0 ? 'win' : 'loss';
+    const holdMin = t.hold_minutes ? t.hold_minutes.toFixed(0) + 'm' : '--';
+    tr.innerHTML = `
+      <td>${t.side}</td>
+      <td>${t.entry_price.toFixed(1)}</td>
+      <td>${t.exit_price.toFixed(1)}</td>
+      <td>${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</td>
+      <td>${(ret * 100).toFixed(2)}%</td>
+      <td>${holdMin}</td>
+      <td>${t.exit_reason}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const total = wins + losses;
+  const pnlEl = document.getElementById('stat-pnl');
+  pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2);
+  pnlEl.className = 'val ' + (totalPnl >= 0 ? 'green' : 'red');
+
+  document.getElementById('stat-trades').textContent = total;
+  document.getElementById('stat-wr').textContent = total > 0 ? (wins / total * 100).toFixed(1) + '%' : '--';
+  document.getElementById('stat-avgwin').textContent = wins > 0 ? '+$' + (winSum / wins).toFixed(2) : '--';
+  document.getElementById('stat-avgloss').textContent = losses > 0 ? '-$' + Math.abs(lossSum / losses).toFixed(2) : '--';
+
+  document.getElementById('stat-avgwin').style.color = '#3fb950';
+  document.getElementById('stat-avgloss').style.color = '#f85149';
+}
+
+// -- Polling --
+async function fetchJSON(url) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch { return null; }
+}
+
+async function pollMarket() {
+  const data = await fetchJSON('/api/market');
+  updateSigmaBar(data);
+}
+
+async function pollStatus() {
+  const data = await fetchJSON('/api/status');
+  updateStatus(data);
+}
+
+async function pollData() {
+  const [trades, daily] = await Promise.all([
+    fetchJSON('/api/trades?limit=20'),
+    fetchJSON('/api/daily?days=30'),
+  ]);
+  updateTrades(trades);
+  updateCharts(daily);
+  document.getElementById('last-updated').textContent =
+    'Updated: ' + new Date().toLocaleTimeString();
+}
+
+// Initial load
+pollMarket();
+pollStatus();
+pollData();
+
+// Intervals
+setInterval(pollMarket, 5000);
+setInterval(pollStatus, 30000);
+setInterval(pollData, 60000);
+</script>
+</body>
+</html>

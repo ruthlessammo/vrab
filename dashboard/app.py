@@ -7,20 +7,13 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 
-from config import DB_PATH, is_kill_switch_active
+from config import DB_PATH, is_kill_switch_active, PAPER_MODE
 
 logger = logging.getLogger(__name__)
 
 _start_time = datetime.now(timezone.utc)
-
-
-def _get_db() -> sqlite3.Connection:
-    """Get a read-only SQLite connection."""
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def create_app(db_path: str | None = None) -> Flask:
@@ -36,7 +29,12 @@ def create_app(db_path: str | None = None) -> Flask:
 
     @app.route("/")
     def index():
-        """Status page."""
+        """Serve the dashboard HTML."""
+        return render_template("index.html")
+
+    @app.route("/api/status")
+    def api_status():
+        """Engine status summary."""
         try:
             conn = get_conn()
             last_trade = conn.execute(
@@ -45,17 +43,42 @@ def create_app(db_path: str | None = None) -> Flask:
             daily_pnl = conn.execute(
                 "SELECT * FROM daily_pnl ORDER BY date DESC LIMIT 1"
             ).fetchone()
+            peak_equity = conn.execute(
+                "SELECT value FROM meta WHERE key = 'peak_equity'"
+            ).fetchone()
+            circuit_breaker = conn.execute(
+                "SELECT value FROM meta WHERE key = 'circuit_breaker'"
+            ).fetchone()
             conn.close()
         except Exception:
             last_trade = None
             daily_pnl = None
+            peak_equity = None
+            circuit_breaker = None
 
         return jsonify({
+            "mode": "paper" if PAPER_MODE else "live",
             "status": "halted" if is_kill_switch_active() else "running",
             "uptime_seconds": (datetime.now(timezone.utc) - _start_time).total_seconds(),
             "last_trade": dict(last_trade) if last_trade else None,
             "daily_pnl": dict(daily_pnl) if daily_pnl else None,
+            "peak_equity": float(peak_equity[0]) if peak_equity else None,
+            "circuit_breaker": circuit_breaker[0] == "1" if circuit_breaker else False,
         })
+
+    @app.route("/api/market")
+    def api_market():
+        """Latest market state from signals table."""
+        try:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT price, vwap, sigma_dist, adx, trend_direction, ts "
+                "FROM signals ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
+            conn.close()
+            return jsonify(dict(row) if row else {})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     @app.route("/api/trades")
     def api_trades():
