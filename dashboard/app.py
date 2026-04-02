@@ -49,12 +49,20 @@ def create_app(db_path: str | None = None) -> Flask:
             circuit_breaker = conn.execute(
                 "SELECT value FROM meta WHERE key = 'circuit_breaker'"
             ).fetchone()
+            live_equity = conn.execute(
+                "SELECT value FROM meta WHERE key = 'live_equity'"
+            ).fetchone()
+            live_daily_pnl = conn.execute(
+                "SELECT value FROM meta WHERE key = 'live_daily_pnl'"
+            ).fetchone()
             conn.close()
         except Exception:
             last_trade = None
             daily_pnl = None
             peak_equity = None
             circuit_breaker = None
+            live_equity = None
+            live_daily_pnl = None
 
         return jsonify({
             "mode": "paper" if PAPER_MODE else "live",
@@ -64,6 +72,8 @@ def create_app(db_path: str | None = None) -> Flask:
             "daily_pnl": dict(daily_pnl) if daily_pnl else None,
             "peak_equity": float(peak_equity[0]) if peak_equity else None,
             "circuit_breaker": circuit_breaker[0] == "1" if circuit_breaker else False,
+            "live_equity": float(live_equity[0]) if live_equity else None,
+            "live_daily_pnl": float(live_daily_pnl[0]) if live_daily_pnl else None,
         })
 
     @app.route("/api/market")

@@ -219,18 +219,30 @@ function updateStatus(data) {
   statusEl.textContent = data.circuit_breaker ? 'CIRCUIT BREAKER' : data.status;
   statusEl.className = 'status-value ' + (data.status === 'running' && !data.circuit_breaker ? 'green' : 'red');
 
-  if (data.daily_pnl) {
+  // Prefer live values from engine (includes unrealized PnL)
+  if (data.live_equity != null) {
+    document.getElementById('st-equity').textContent = '$' + data.live_equity.toFixed(2);
+  } else if (data.daily_pnl) {
     const dp = data.daily_pnl;
     const eq = dp.start_equity != null && dp.pnl_usd != null
       ? dp.start_equity + dp.pnl_usd : dp.end_equity || dp.start_equity || '--';
     document.getElementById('st-equity').textContent = typeof eq === 'number' ? '$' + eq.toFixed(2) : eq;
+  }
 
-    const pnl = dp.pnl_usd;
+  if (data.live_daily_pnl != null) {
+    const pnl = data.live_daily_pnl;
     const pnlEl = document.getElementById('st-daily');
     pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
     pnlEl.className = 'status-value ' + (pnl >= 0 ? 'green' : 'red');
+  } else if (data.daily_pnl) {
+    const pnl = data.daily_pnl.pnl_usd;
+    const pnlEl = document.getElementById('st-daily');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+    pnlEl.className = 'status-value ' + (pnl >= 0 ? 'green' : 'red');
+  }
 
-    document.getElementById('st-trades').textContent = dp.trade_count || 0;
+  if (data.daily_pnl) {
+    document.getElementById('st-trades').textContent = data.daily_pnl.trade_count || 0;
   }
 
   const hrs = (data.uptime_seconds / 3600).toFixed(1);

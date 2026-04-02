@@ -403,8 +403,14 @@ class LiveEngine:
         self._store.reconcile_daily_state(CAPITAL_USDC)
         hot = self._store.get_daily_state()
         self._daily_pnl = hot.daily_pnl_usd
+        self._daily_start_equity = hot.daily_start_equity
         self._halted_today = hot.halted
         self._current_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Sync paper client balance to match true equity
+        if PAPER_MODE:
+            self._client._balance = self._daily_start_equity + self._daily_pnl
+            logger.info("Paper balance synced to %.2f", self._client._balance)
 
         # Load circuit breaker state
         peak = self._store.get_meta("peak_equity")
@@ -503,6 +509,10 @@ class LiveEngine:
                     f"Send /reset to resume trading"
                 )
                 return
+
+        # --- Write live equity to DB for dashboard ---
+        self._store.set_meta("live_equity", str(equity))
+        self._store.set_meta("live_daily_pnl", str(self._daily_pnl))
 
         # --- Periodic tasks (run regardless of position state) ---
         if self._candle_count % HEARTBEAT_INTERVAL_CANDLES == 0:

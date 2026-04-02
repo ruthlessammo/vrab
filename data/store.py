@@ -358,6 +358,7 @@ class Store:
         self,
         symbol: str | None = None,
         since_ts: int | None = None,
+        before_ts: int | None = None,
         limit: int = 100,
     ) -> list[Trade]:
         """Retrieve trades from DB."""
@@ -369,6 +370,9 @@ class Store:
         if since_ts:
             query += " AND entry_ts >= ?"
             params.append(since_ts)
+        if before_ts:
+            query += " AND entry_ts < ?"
+            params.append(before_ts)
         query += " ORDER BY entry_ts DESC LIMIT ?"
         params.append(limit)
 
@@ -475,14 +479,22 @@ class Store:
             .replace(tzinfo=timezone.utc)
             .timestamp() * 1000
         )
-        trades = self.get_trades(since_ts=start_of_day_ms, limit=1000)
-        daily_pnl = sum(t.net_pnl for t in trades)
+
+        # Compute true start-of-day equity from all prior trades
+        prior_trades = self.get_trades(before_ts=start_of_day_ms, limit=10000)
+        prior_pnl = sum(t.net_pnl for t in prior_trades)
+        start_equity = capital_usdc + prior_pnl
+
+        # Today's trades
+        today_trades = self.get_trades(since_ts=start_of_day_ms, limit=1000)
+        daily_pnl = sum(t.net_pnl for t in today_trades)
+
         self._hot_state.daily_pnl_usd = daily_pnl
-        self._hot_state.daily_start_equity = capital_usdc
-        self._hot_state.trade_count_today = len(trades)
+        self._hot_state.daily_start_equity = start_equity
+        self._hot_state.trade_count_today = len(today_trades)
         logger.info(
-            "Reconciled daily state: pnl=%.2f trades=%d",
-            daily_pnl, len(trades),
+            "Reconciled daily state: start_equity=%.2f pnl=%.2f trades=%d",
+            start_equity, daily_pnl, len(today_trades),
         )
 
     def get_meta(self, key: str) -> str | None:
