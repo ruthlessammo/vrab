@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=will
-WorkingDirectory=/home/will/vrab
-EnvironmentFile=/home/will/vrab/.env
-ExecStart=/usr/bin/python3 -m dashboard
+User=root
+WorkingDirectory=/root/vrab
+EnvironmentFile=/root/vrab/.env
+ExecStart=/root/vrab/venv/bin/python -m dashboard
 Restart=always
 RestartSec=5
 

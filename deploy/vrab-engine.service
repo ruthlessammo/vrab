@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=will
-WorkingDirectory=/home/will/vrab
-EnvironmentFile=/home/will/vrab/.env
-ExecStart=/usr/bin/python3 -m live.engine
+User=root
+WorkingDirectory=/root/vrab
+EnvironmentFile=/root/vrab/.env
+ExecStart=/root/vrab/venv/bin/python -m live.engine
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
