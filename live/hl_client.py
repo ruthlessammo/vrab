@@ -58,9 +58,21 @@ class HLClient:
         return round(size_btc, self._sz_decimals)
 
     def get_balance(self) -> float:
-        """Get perps account equity in USD."""
+        """Get total account equity (perps + spot USDC for unified accounts)."""
         state = self._info.user_state(self._wallet_address)
-        return float(state["crossMarginSummary"]["accountValue"])
+        perps = float(state["crossMarginSummary"]["accountValue"])
+        if perps > 0:
+            return perps
+
+        # Unified/margin accounts: balance lives in spot state
+        try:
+            spot_state = self._info.spot_user_state(self._wallet_address)
+            for bal in spot_state.get("balances", []):
+                if bal["coin"] == "USDC":
+                    return float(bal["total"])
+        except Exception:
+            pass
+        return perps
 
     def sweep_spot_to_perps(self) -> None:
         """Transfer any spot USDC to perps margin. Deposits often land in spot."""
