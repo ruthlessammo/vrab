@@ -116,6 +116,7 @@ class TelegramBot:
             "/pnl": self._cmd_pnl,
             "/equity": self._cmd_equity,
             "/trades": self._cmd_trades,
+            "/close": self._cmd_close,
             "/kill": self._cmd_kill,
             "/reset": self._cmd_reset,
         }
@@ -135,6 +136,7 @@ class TelegramBot:
                 "/pnl — PnL summary\n"
                 "/equity — Total equity\n"
                 "/trades — Recent trades\n"
+                "/close — Force close position\n"
                 "/kill — Emergency stop\n"
                 "/reset — Clear circuit breaker"
             )
@@ -180,6 +182,32 @@ class TelegramBot:
         """Handle /trades command."""
         trades = self._store.get_trades(limit=5)
         return format_trades_list(trades)
+
+    async def _cmd_close(self) -> str:
+        """Handle /close command — force close any open position."""
+        if not self._engine:
+            return "*Error*: Engine reference not available"
+        if not self._engine._position:
+            # Check HL directly for orphaned positions
+            from config import PAPER_MODE, SYMBOL
+            if PAPER_MODE:
+                return "*No position open*"
+            import asyncio
+            hl_pos = await asyncio.to_thread(self._engine._client.get_position, SYMBOL)
+            if not hl_pos:
+                return "*No position open*"
+            # Force close orphaned position on HL
+            is_buy = hl_pos["side"] == "short"
+            await asyncio.to_thread(
+                self._engine._client.cancel_all_orders, SYMBOL,
+            )
+            await asyncio.to_thread(
+                self._engine._client.place_market_order,
+                SYMBOL, is_buy, hl_pos["size_btc"], reduce_only=True,
+            )
+            return f"*Orphaned position closed*\n{hl_pos['side']} {hl_pos['size_btc']:.5f} BTC"
+        await self._engine._emergency_close("telegram_close")
+        return "*Position closed via /close*"
 
     async def _cmd_kill(self) -> str:
         """Handle /kill command — activate kill switch."""
