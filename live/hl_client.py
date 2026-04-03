@@ -61,17 +61,22 @@ class HLClient:
         """Get total account equity (perps + spot USDC for unified accounts)."""
         state = self._info.user_state(self._wallet_address)
         perps = float(state["crossMarginSummary"]["accountValue"])
-        if perps > 0:
-            return perps
 
-        # Unified/margin accounts: balance lives in spot state
+        # Unified/margin accounts: perps may show 0, balance is in spot
+        # Always sum both — margin in perps + free USDC in spot
+        spot_usdc = 0.0
         try:
             spot_state = self._info.spot_user_state(self._wallet_address)
             for bal in spot_state.get("balances", []):
                 if bal["coin"] == "USDC":
-                    return float(bal["total"])
+                    spot_usdc = float(bal["total"])
+                    break
         except Exception:
             pass
+
+        total = perps + spot_usdc
+        if total > 0:
+            return total
         return perps
 
     def sweep_spot_to_perps(self) -> None:
