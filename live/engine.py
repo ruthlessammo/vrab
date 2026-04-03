@@ -198,7 +198,7 @@ class LiveEngine:
         await self._reconcile()
 
         # Step 2: Backfill and subscribe to candle feed
-        info = self._client.info if not PAPER_MODE else self._create_info_for_paper()
+        info = self._create_ws_info()
         feed = CandleFeed(
             info=info, symbol=SYMBOL, store=self._store,
             candle_queue=candle_queue,
@@ -269,8 +269,8 @@ class LiveEngine:
             await asyncio.to_thread(self._client.unschedule_cancel)
         logger.info("Engine stopped")
 
-    def _create_info_for_paper(self):
-        """Create a standalone Info object for paper mode (WS candle feed)."""
+    def _create_ws_info(self):
+        """Create a standalone Info object with WebSocket support for the candle feed."""
         from hyperliquid.info import Info
         return Info(base_url=HL_BASE_URL, skip_ws=False)
 
