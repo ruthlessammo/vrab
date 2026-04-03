@@ -58,9 +58,25 @@ class HLClient:
         return round(size_btc, self._sz_decimals)
 
     def get_balance(self) -> float:
-        """Get account equity in USD."""
+        """Get perps account equity in USD."""
         state = self._info.user_state(self._wallet_address)
         return float(state["crossMarginSummary"]["accountValue"])
+
+    def sweep_spot_to_perps(self) -> None:
+        """Transfer any spot USDC to perps margin. Deposits often land in spot."""
+        try:
+            spot_state = self._info.spot_user_state(self._wallet_address)
+            for bal in spot_state.get("balances", []):
+                if bal["coin"] == "USDC":
+                    available = float(bal["total"]) - float(bal.get("hold", "0"))
+                    if available > 1.0:
+                        result = self._exchange.usd_class_transfer(
+                            amount=available, to_perp=True,
+                        )
+                        logger.info("Swept %.2f USDC spot → perps: %s", available, result)
+                    break
+        except Exception as e:
+            logger.warning("Spot sweep failed: %s", e)
 
     def get_position(self, symbol: str = "BTC") -> dict | None:
         """Get current position for symbol.

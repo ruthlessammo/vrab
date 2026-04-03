@@ -195,6 +195,8 @@ class LiveEngine:
         # Step 1: Connect and reconcile
         logger.info("Starting live engine (paper=%s)", PAPER_MODE)
         await asyncio.to_thread(self._client.connect, SYMBOL, TARGET_LEVERAGE)
+        if not PAPER_MODE:
+            await asyncio.to_thread(self._client.sweep_spot_to_perps)
         await self._reconcile()
 
         # Step 2: Backfill and subscribe to candle feed
