@@ -26,7 +26,7 @@ TREND_TF = "15m"
 # ---------------------------------------------------------------------------
 # Capital
 # ---------------------------------------------------------------------------
-CAPITAL_USDC = 500.0
+CAPITAL_USDC = float(os.getenv("CAPITAL_USDC", "500.0"))
 RISK_PER_TRADE = 0.015          # 1.5% of equity per trade
 MAKER_ONLY = True
 
