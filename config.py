@@ -14,6 +14,7 @@ HL_PRIVATE_KEY = os.getenv("HL_PRIVATE_KEY", "")
 HL_WALLET_ADDRESS = os.getenv("HL_WALLET_ADDRESS", "")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # Market
@@ -89,7 +90,7 @@ GATE0_MAX_HALTS = 2
 # ---------------------------------------------------------------------------
 # Live engine
 # ---------------------------------------------------------------------------
-PAPER_MODE = True                       # start in paper mode
+PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
 TELEGRAM_POLL_INTERVAL = 2              # seconds between bot getUpdates polls
 DAILY_SUMMARY_ENABLED = True            # send end-of-day summary via Telegram
 CANDLE_BACKFILL_COUNT = 200             # candles to backfill on startup per TF

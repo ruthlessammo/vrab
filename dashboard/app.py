@@ -7,9 +7,9 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, abort
 
-from config import DB_PATH, is_kill_switch_active, PAPER_MODE
+from config import DB_PATH, is_kill_switch_active, PAPER_MODE, DASHBOARD_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,25 @@ def create_app(db_path: str | None = None) -> Flask:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _check_token():
+        """Verify dashboard token on protected routes."""
+        if not DASHBOARD_TOKEN:
+            return  # no token configured = auth disabled
+        if request.endpoint == "api_health":
+            return  # health check is public
+        token = request.args.get("token") or ""
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+        if token != DASHBOARD_TOKEN:
+            abort(401)
+
+    app.before_request(_check_token)
+
     @app.route("/")
     def index():
         """Serve the dashboard HTML."""
-        return render_template("index.html")
+        return render_template("index.html", token=DASHBOARD_TOKEN)
 
     @app.route("/api/status")
     def api_status():

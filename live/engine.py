@@ -1095,16 +1095,19 @@ async def main():
 
     params = build_params_from_config()
     store = Store(DB_PATH)
+    try:
+        if PAPER_MODE:
+            from live.paper import PaperClient
+            client = PaperClient(CAPITAL_USDC)
+        else:
+            from live.hl_client import HLClient
+            client = HLClient(HL_PRIVATE_KEY, HL_BASE_URL, HL_WALLET_ADDRESS)
 
-    if PAPER_MODE:
-        from live.paper import PaperClient
-        client = PaperClient(CAPITAL_USDC)
-    else:
-        from live.hl_client import HLClient
-        client = HLClient(HL_PRIVATE_KEY, HL_BASE_URL, HL_WALLET_ADDRESS)
-
-    engine = LiveEngine(client, store, params)
-    await engine.run()
+        engine = LiveEngine(client, store, params)
+        await engine.run()
+    finally:
+        store.close()
+        logger.info("Store closed")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+[Unit]
+Description=VRAB Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=will
+WorkingDirectory=/home/will/vrab
+EnvironmentFile=/home/will/vrab/.env
+ExecStart=/usr/bin/python3 -m dashboard
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

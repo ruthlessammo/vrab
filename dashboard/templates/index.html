@@ -164,6 +164,8 @@
 <div class="updated" id="last-updated"></div>
 
 <script>
+const TOKEN = '{{ token or "" }}';
+const TOKEN_QS = TOKEN ? '?token=' + TOKEN : '';
 const SIGMA_MAX = 3.0;
 const ENTRY_SIGMA = 2.5;
 
@@ -351,7 +353,9 @@ function updateTrades(trades) {
 // -- Polling --
 async function fetchJSON(url) {
   try {
-    const resp = await fetch(url);
+    const sep = url.includes('?') ? '&' : '?';
+    const fullUrl = TOKEN ? url + sep + 'token=' + TOKEN : url;
+    const resp = await fetch(fullUrl);
     if (!resp.ok) return null;
     return await resp.json();
   } catch { return null; }
