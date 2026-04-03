@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request, abort
+from flask import Flask, jsonify, render_template, request, abort, redirect, url_for, make_response
 
 from config import DB_PATH, is_kill_switch_active, PAPER_MODE, DASHBOARD_TOKEN
 
@@ -19,6 +19,7 @@ _start_time = datetime.now(timezone.utc)
 def create_app(db_path: str | None = None) -> Flask:
     """Create the Flask dashboard app."""
     app = Flask(__name__)
+    app.secret_key = DASHBOARD_TOKEN or "dev"
 
     actual_db_path = db_path or DB_PATH
 
@@ -31,21 +32,39 @@ def create_app(db_path: str | None = None) -> Flask:
         """Verify dashboard token on protected routes."""
         if not DASHBOARD_TOKEN:
             return  # no token configured = auth disabled
-        if request.endpoint == "api_health":
-            return  # health check is public
-        token = request.args.get("token") or ""
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
+        if request.endpoint in ("api_health", "login"):
+            return  # public endpoints
+        # Check cookie, then query param, then header
+        token = request.cookies.get("vrab_token") or ""
+        if not token:
+            token = request.args.get("token") or ""
+        if not token:
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth[7:]
         if token != DASHBOARD_TOKEN:
-            abort(401)
+            if request.endpoint and request.endpoint.startswith("api_"):
+                abort(401)
+            return redirect(url_for("login"))
 
     app.before_request(_check_token)
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        """Login page."""
+        error = ""
+        if request.method == "POST":
+            if request.form.get("password") == DASHBOARD_TOKEN:
+                resp = make_response(redirect(url_for("index")))
+                resp.set_cookie("vrab_token", DASHBOARD_TOKEN, httponly=True, samesite="Lax", max_age=86400 * 30)
+                return resp
+            error = "Invalid password"
+        return render_template("login.html", error=error)
 
     @app.route("/")
     def index():
         """Serve the dashboard HTML."""
-        return render_template("index.html", token=DASHBOARD_TOKEN)
+        return render_template("index.html")
 
     @app.route("/api/status")
     def api_status():
