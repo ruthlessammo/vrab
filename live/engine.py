@@ -290,7 +290,9 @@ class LiveEngine:
         self._pending_entry = None
         self._store.set_meta("pending_entry", "")
 
-    def _save_pending_entry(self, oid: int, setup: TradeSetup, size_btc: float, equity: float) -> None:
+    def _save_pending_entry(
+        self, oid: int, setup: TradeSetup, size_btc: float, equity: float, entry_ts: int,
+    ) -> None:
         """Persist pending entry to DB for recovery across restarts."""
         self._store.set_meta("pending_entry", json.dumps({
             "oid": oid,
@@ -302,6 +304,7 @@ class LiveEngine:
             "equity_at_entry": equity,
             "liq_price": setup.liq_price,
             "liq_buffer_ratio": setup.liq_buffer_ratio,
+            "entry_ts": entry_ts,
         }))
 
     async def _place_exit_orders(self, pos: PositionState) -> None:
@@ -520,7 +523,7 @@ class LiveEngine:
                 liq_price=saved.get("liq_price", 0.0),
                 liq_buffer_ratio=saved.get("liq_buffer_ratio", 0.0),
                 equity_at_entry=saved.get("equity_at_entry", 0.0),
-                entry_ts=0,
+                entry_ts=saved.get("entry_ts", int(time.time() * 1000)),
                 hold_candles=0,
             )
             # Cancel any stale orders, then place fresh stop/TP
@@ -596,7 +599,7 @@ class LiveEngine:
             liq_price=liq_price,
             liq_buffer_ratio=liq_buffer,
             equity_at_entry=equity,
-            entry_ts=0,
+            entry_ts=int(time.time() * 1000),
             hold_candles=0,
         )
 
@@ -681,6 +684,10 @@ class LiveEngine:
                 )
                 return
 
+        # --- Live mode: derive daily PnL from equity delta (source of truth) ---
+        if not PAPER_MODE:
+            self._daily_pnl = equity - self._daily_start_equity
+
         # --- Write live equity to DB for dashboard ---
         self._store.set_meta("live_equity", str(equity))
         self._store.set_meta("live_daily_pnl", str(self._daily_pnl))
@@ -734,6 +741,27 @@ class LiveEngine:
         else:
             funding_rate = self._params.hourly_funding_rate
 
+        # --- Generate signal and update market status (runs every candle) ---
+        pos_side = self._position.side if self._position else None
+        entry_decision = evaluate_entry(
+            closes=closes, highs=highs, lows=lows, volumes=volumes,
+            trend_closes=t_closes, trend_highs=t_highs, trend_lows=t_lows,
+            equity=equity, current_position_side=pos_side,
+            funding_rate=funding_rate, params=self._params,
+        )
+        sig = entry_decision.signal_result
+        if sig and sig.vwap_state and sig.regime:
+            self.status.price = sig.price
+            self.status.vwap = sig.vwap_state.vwap
+            self.status.sigma_dist = sig.sigma_dist
+            self.status.adx = sig.regime.adx
+            self.status.trend = sig.regime.trend_direction
+            logger.info(
+                "Market: price=%.1f vwap=%.1f σ=%.2f adx=%.1f trend=%s",
+                sig.price, sig.vwap_state.vwap, sig.sigma_dist,
+                sig.regime.adx, sig.regime.trend_direction,
+            )
+
         # --- If in position: evaluate exit ---
         if self._position is not None:
             self._position.hold_candles += 1
@@ -763,12 +791,8 @@ class LiveEngine:
             await self._check_pending_entry(candle_ts)
             return
 
-        # --- No position, no pending: evaluate entry ---
-        await self._evaluate_and_enter(
-            candle, candle_ts, equity, funding_rate,
-            closes, highs, lows, volumes,
-            t_closes, t_highs, t_lows,
-        )
+        # --- No position, no pending: process entry ---
+        await self._process_entry(entry_decision, candle_ts, equity, funding_rate)
 
     async def _finalize_day(self, new_day: str) -> None:
         """Finalize previous day's PnL, send summary, reset counters."""
@@ -842,34 +866,12 @@ class LiveEngine:
             self._pending_signal_dir = None
             self._pending_signal_count = 0
 
-    async def _evaluate_and_enter(
-        self, candle: Candle, candle_ts: int, equity: float, funding_rate: float,
-        closes: list, highs: list, lows: list, volumes: list,
-        t_closes: list, t_highs: list, t_lows: list,
+    async def _process_entry(
+        self, entry_decision: CoreDecision, candle_ts: int,
+        equity: float, funding_rate: float,
     ) -> None:
-        """Evaluate entry signal and place order if appropriate."""
-        entry_decision = evaluate_entry(
-            closes=closes, highs=highs, lows=lows, volumes=volumes,
-            trend_closes=t_closes, trend_highs=t_highs, trend_lows=t_lows,
-            equity=equity, current_position_side=None,
-            funding_rate=funding_rate, params=self._params,
-        )
-
-        # Log market state every candle and update shared status
+        """Process an already-computed entry decision: log signal, track counts, place order."""
         sig = entry_decision.signal_result
-        if sig and sig.vwap_state and sig.regime:
-            self.status.price = sig.price
-            self.status.vwap = sig.vwap_state.vwap
-            self.status.sigma_dist = sig.sigma_dist
-            self.status.adx = sig.regime.adx
-            self.status.trend = sig.regime.trend_direction
-            logger.info(
-                "Market: price=%.1f vwap=%.1f σ=%.2f adx=%.1f trend=%s | %s%s",
-                sig.price, sig.vwap_state.vwap, sig.sigma_dist,
-                sig.regime.adx, sig.regime.trend_direction,
-                entry_decision.action,
-                f" ({entry_decision.block_reason})" if entry_decision.block_reason else "",
-            )
 
         # Track signal counts
         if sig and sig.signal in ("long_entry", "short_entry"):
@@ -877,7 +879,7 @@ class LiveEngine:
             if entry_decision.action == "skip" and entry_decision.block_reason:
                 self._signals_blocked_today += 1
 
-        # Log signal
+        # Log signal to DB
         if sig:
             self._store.log_signal(
                 symbol=SYMBOL, tf=CANDLE_TF, ts=candle_ts,
@@ -961,7 +963,7 @@ class LiveEngine:
             entry_ts=candle_ts,
         )
 
-        self._save_pending_entry(oid, setup, size_btc, equity)
+        self._save_pending_entry(oid, setup, size_btc, equity, candle_ts)
 
         logger.info(
             "Entry order placed: %s %s %.5f BTC @ %.1f (oid=%d)",
@@ -996,6 +998,54 @@ class LiveEngine:
             "Position opened: %s %.5f BTC @ %.1f | stop=%.1f target=%.1f",
             setup.side, size_btc, setup.entry_price, setup.stop_price, setup.target_price,
         )
+
+    async def _calc_live_pnl(self, pos: PositionState, exit_price: float, exit_ts: int) -> dict:
+        """Get real PnL from HL fills instead of estimating.
+
+        Uses closedPnl (gross) and fee fields from user_fills,
+        plus funding from user_funding_history.
+        """
+        fills = await asyncio.to_thread(self._client.get_recent_fills, SYMBOL)
+
+        # Match fills to this trade by time window
+        trade_fills = [f for f in fills
+                       if f["time"] >= pos.entry_ts - 60_000
+                       and f["time"] <= exit_ts + 60_000]
+
+        closed_pnl = sum(float(f["closedPnl"]) for f in trade_fills)
+        total_fees = sum(float(f["fee"]) for f in trade_fills)
+
+        # Funding during hold period
+        funding_usd = 0.0
+        if pos.entry_ts > 0:
+            try:
+                funding_records = await asyncio.to_thread(
+                    self._client.get_funding_history, pos.entry_ts, exit_ts)
+                for r in funding_records:
+                    delta = r.get("delta", {})
+                    funding_usd += float(delta.get("usdc", 0))
+            except Exception as e:
+                logger.warning("Failed to fetch funding history: %s", e)
+
+        # closedPnl = gross price movement. Net = closedPnl - fees + funding.
+        net_pnl = closed_pnl - total_fees + funding_usd
+        equity = pos.equity_at_entry if pos.equity_at_entry > 0 else 1.0
+
+        logger.info(
+            "Live PnL: closedPnl=%.4f fees=%.4f funding=%.4f net=%.4f (fills=%d)",
+            closed_pnl, total_fees, funding_usd, net_pnl, len(trade_fills),
+        )
+
+        return {
+            "pnl_usd": closed_pnl,
+            "slippage_usd": 0.0,
+            "entry_fee_usd": -total_fees,
+            "exit_fee_usd": 0.0,
+            "funding_usd": funding_usd,
+            "maker_rebate_usd": 0.0,
+            "net_pnl_usd": net_pnl,
+            "equity_return_pct": net_pnl / equity,
+        }
 
     async def _execute_exit(self, decision: CoreDecision, candle_ts: int) -> None:
         """Execute an exit — cancel existing orders, close position, record trade."""
@@ -1042,19 +1092,22 @@ class LiveEngine:
         except Exception as e:
             logger.warning("Post-exit cancel_all failed: %s", e)
 
-        # Calculate PnL
-        hold_hours = (candle_ts - pos.entry_ts) / 3_600_000
-        pnl_result = calc_trade_pnl(
-            side=pos.side,
-            entry_price=pos.entry_price,
-            exit_price=exit_price,
-            size_usd=pos.size_usd,
-            equity=pos.equity_at_entry,
-            leverage=self._params.target_leverage,
-            is_maker_exit=ea.is_maker,
-            hold_hours=hold_hours,
-            params=self._params,
-        )
+        # Calculate PnL — use HL actuals for live, model for paper
+        hold_minutes = (candle_ts - pos.entry_ts) / 60_000
+        if PAPER_MODE:
+            pnl_result = calc_trade_pnl(
+                side=pos.side,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                size_usd=pos.size_usd,
+                equity=pos.equity_at_entry,
+                leverage=self._params.target_leverage,
+                is_maker_exit=ea.is_maker,
+                hold_hours=hold_minutes / 60,
+                params=self._params,
+            )
+        else:
+            pnl_result = await self._calc_live_pnl(pos, exit_price, candle_ts)
 
         # Record trade
         trade = Trade(
@@ -1070,7 +1123,7 @@ class LiveEngine:
             exit_ts=candle_ts,
             exit_reason=ea.exit_type,
             hold_candles=pos.hold_candles,
-            hold_minutes=hold_hours * 60,
+            hold_minutes=hold_minutes,
             equity_at_entry=pos.equity_at_entry,
             liq_buffer_ratio=pos.liq_buffer_ratio,
             stop_price=pos.stop_price,
@@ -1082,7 +1135,9 @@ class LiveEngine:
         trade_id = self._store.record_trade(trade)
 
         # Update daily tracking
-        self._daily_pnl += trade.net_pnl
+        if PAPER_MODE:
+            self._daily_pnl += trade.net_pnl
+        # Live mode: _daily_pnl derived from equity delta each candle
         self._trade_count_today += 1
 
         # Sync paper client balance to match cost-adjusted equity
