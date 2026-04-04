@@ -15,7 +15,7 @@ import aiohttp
 
 from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, KILL_SWITCH_PATH,
-    CAPITAL_USDC, TELEGRAM_POLL_INTERVAL,
+    TELEGRAM_POLL_INTERVAL,
 )
 from data.store import Store
 from notifications.telegram import (
@@ -176,7 +176,10 @@ class TelegramBot:
         source_trades = [t for t in all_trades if t.source == source]
         total_pnl = sum(t.net_pnl for t in source_trades)
 
-        return format_equity(equity, CAPITAL_USDC, total_pnl)
+        initial_capital = float(self._store.get_meta("initial_capital") or "0")
+        if initial_capital <= 0:
+            initial_capital = equity  # fallback: treat current equity as capital
+        return format_equity(equity, initial_capital, total_pnl)
 
     async def _cmd_trades(self) -> str:
         """Handle /trades command."""

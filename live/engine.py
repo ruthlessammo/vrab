@@ -152,7 +152,7 @@ class LiveEngine:
         self._signals_today: int = 0
         self._signals_blocked_today: int = 0
         self._daily_max_dd: float = 0.0
-        self._daily_start_equity: float = CAPITAL_USDC
+        self._daily_start_equity: float = 0.0
 
         # Entry expiry
         self._pending_signal_dir: str | None = None
@@ -162,7 +162,7 @@ class LiveEngine:
         self._pending_entry: PendingEntry | None = None
 
         # Circuit breaker (persists across days and restarts)
-        self._peak_equity: float = CAPITAL_USDC
+        self._peak_equity: float = 0.0
         self._circuit_breaker: bool = False
 
         # Candle counter for periodic tasks
@@ -195,8 +195,6 @@ class LiveEngine:
         # Step 1: Connect and reconcile
         logger.info("Starting live engine (paper=%s)", PAPER_MODE)
         await asyncio.to_thread(self._client.connect, SYMBOL, TARGET_LEVERAGE)
-        if not PAPER_MODE:
-            await asyncio.to_thread(self._client.sweep_spot_to_perps)
         await self._reconcile()
 
         # Step 2: Backfill and subscribe to candle feed
@@ -287,6 +285,57 @@ class LiveEngine:
         """Clear persisted position from meta table."""
         self._store.set_meta("open_position", "")
 
+    def _clear_pending_entry(self) -> None:
+        """Clear pending entry from memory and DB."""
+        self._pending_entry = None
+        self._store.set_meta("pending_entry", "")
+
+    def _save_pending_entry(self, oid: int, setup: TradeSetup, size_btc: float, equity: float) -> None:
+        """Persist pending entry to DB for recovery across restarts."""
+        self._store.set_meta("pending_entry", json.dumps({
+            "oid": oid,
+            "side": setup.side,
+            "entry_price": setup.entry_price,
+            "size_btc": size_btc,
+            "stop_price": setup.stop_price,
+            "target_price": setup.target_price,
+            "equity_at_entry": equity,
+            "liq_price": setup.liq_price,
+            "liq_buffer_ratio": setup.liq_buffer_ratio,
+        }))
+
+    async def _place_exit_orders(self, pos: PositionState) -> None:
+        """Place stop-loss and take-profit orders on HL for a position.
+
+        Shared by _on_entry_filled, _restore_position, _recover_pending_entry,
+        and _adopt_orphaned_position.
+        """
+        is_close_buy = pos.side == "short"
+
+        if PAPER_MODE:
+            result = self._client.place_trigger_order(
+                SYMBOL, is_close_buy, pos.size_btc, pos.stop_price, tpsl="sl",
+            )
+        else:
+            result = await asyncio.to_thread(
+                self._client.place_trigger_order,
+                SYMBOL, is_close_buy, pos.size_btc, pos.stop_price, tpsl="sl",
+            )
+        pos.stop_oid = self._extract_oid(result)
+
+        if PAPER_MODE:
+            result = self._client.place_limit_order(
+                SYMBOL, is_close_buy, pos.size_btc, pos.target_price,
+                reduce_only=True, post_only=True,
+            )
+        else:
+            result = await asyncio.to_thread(
+                self._client.place_limit_order,
+                SYMBOL, is_close_buy, pos.size_btc, pos.target_price,
+                reduce_only=True, post_only=True,
+            )
+        pos.target_oid = self._extract_oid(result)
+
     async def _restore_position(self) -> None:
         """Restore position state from meta table on startup."""
         raw = self._store.get_meta("open_position")
@@ -311,20 +360,7 @@ class LiveEngine:
                 "liq_price": saved.liq_price,
                 "unrealized_pnl": 0.0,
             }
-            # Re-place stop and target orders
-            is_stop_buy = saved.side == "short"
-            result = self._client.place_trigger_order(
-                SYMBOL, is_stop_buy, saved.size_btc, saved.stop_price, tpsl="sl",
-            )
-            saved.stop_oid = self._extract_oid(result)
-
-            is_tp_buy = saved.side == "short"
-            result = self._client.place_limit_order(
-                SYMBOL, is_tp_buy, saved.size_btc, saved.target_price,
-                reduce_only=True, post_only=True,
-            )
-            saved.target_oid = self._extract_oid(result)
-
+            await self._place_exit_orders(saved)
             self._position = saved
             logger.info(
                 "Recovered paper position: %s %.5f BTC @ %.1f | stop=%.1f target=%.1f",
@@ -369,22 +405,7 @@ class LiveEngine:
 
         # Cancel stale orders, re-place stop and target
         await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
-
-        is_stop_buy = saved.side == "short"
-        result = await asyncio.to_thread(
-            self._client.place_trigger_order,
-            SYMBOL, is_stop_buy, saved.size_btc, saved.stop_price, tpsl="sl",
-        )
-        saved.stop_oid = self._extract_oid(result)
-
-        is_tp_buy = saved.side == "short"
-        result = await asyncio.to_thread(
-            self._client.place_limit_order,
-            SYMBOL, is_tp_buy, saved.size_btc, saved.target_price,
-            reduce_only=True, post_only=True,
-        )
-        saved.target_oid = self._extract_oid(result)
-
+        await self._place_exit_orders(saved)
         self._position = saved
         self._save_position_state()
 
@@ -402,7 +423,19 @@ class LiveEngine:
 
     async def _reconcile(self) -> None:
         """Startup reconciliation — sync local state with exchange."""
-        self._store.reconcile_daily_state(CAPITAL_USDC)
+        # Determine initial capital: read from HL on first run, persist to DB
+        initial_capital = self._store.get_meta("initial_capital")
+        if initial_capital:
+            initial_capital = float(initial_capital)
+        else:
+            if PAPER_MODE:
+                initial_capital = CAPITAL_USDC
+            else:
+                initial_capital = await self._get_equity()
+            self._store.set_meta("initial_capital", str(initial_capital))
+            logger.info("Initial capital set to %.2f", initial_capital)
+
+        self._store.reconcile_daily_state(initial_capital)
         hot = self._store.get_daily_state()
         self._daily_pnl = hot.daily_pnl_usd
         self._daily_start_equity = hot.daily_start_equity
@@ -418,6 +451,9 @@ class LiveEngine:
         peak = self._store.get_meta("peak_equity")
         if peak:
             self._peak_equity = float(peak)
+        else:
+            # First run: set peak to current equity
+            self._peak_equity = await self._get_equity() if not PAPER_MODE else self._daily_start_equity
         self._circuit_breaker = self._store.get_meta("circuit_breaker") == "1"
         if self._circuit_breaker:
             logger.warning("Circuit breaker ACTIVE from previous session (peak=%.2f)", self._peak_equity)
@@ -427,7 +463,6 @@ class LiveEngine:
         await self._restore_position()
 
         if self._position:
-            # Position was recovered — skip the rest of reconciliation
             logger.info("Reconciliation complete (position recovered)")
             return
 
@@ -435,23 +470,152 @@ class LiveEngine:
             logger.info("Paper mode — no position to recover")
             return
 
-        # No saved position — check HL for orphaned positions
+        # Check for saved pending entry that may have filled while engine was down
+        await self._recover_pending_entry()
+
+        if self._position:
+            logger.info("Reconciliation complete (pending entry filled → position recovered)")
+            return
+
+        # No saved position — check HL for orphaned positions and adopt them
         hl_pos = await asyncio.to_thread(self._client.get_position, SYMBOL)
         if hl_pos:
-            logger.warning(
-                "HL has open position: %s %.5f BTC @ %.1f — NOT auto-managing. "
-                "Close manually or set up position state.",
-                hl_pos["side"], hl_pos["size_btc"], hl_pos["entry_price"],
-            )
-            await send_alert(
-                f"*WARNING*: Existing {hl_pos['side']} position found on startup. "
-                f"Size: {hl_pos['size_btc']:.5f} BTC @ {hl_pos['entry_price']:.1f}. "
-                f"Not auto-managing — close manually if unintended."
-            )
+            await self._adopt_orphaned_position(hl_pos)
+            if self._position:
+                logger.info("Reconciliation complete (orphaned position adopted)")
+                return
 
         # Cancel any stale orders
         await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
         logger.info("Reconciliation complete")
+
+    async def _recover_pending_entry(self) -> None:
+        """Check if a saved pending entry was filled while engine was down."""
+        raw = self._store.get_meta("pending_entry")
+        if not raw:
+            return
+
+        try:
+            saved = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            self._clear_pending_entry()
+            return
+
+        oid = saved["oid"]
+        status = await asyncio.to_thread(self._client.query_order_status, oid)
+        is_filled = (
+            status.get("status") == "filled"
+            or status.get("order", {}).get("status") == "filled"
+        )
+
+        if is_filled:
+            logger.info("Pending entry %d filled while engine was down — restoring position", oid)
+            self._position = PositionState(
+                side=saved["side"],
+                entry_price=saved["entry_price"],
+                size_btc=saved["size_btc"],
+                size_usd=saved["size_btc"] * saved["entry_price"],
+                stop_price=saved["stop_price"],
+                target_price=saved["target_price"],
+                liq_price=saved.get("liq_price", 0.0),
+                liq_buffer_ratio=saved.get("liq_buffer_ratio", 0.0),
+                equity_at_entry=saved.get("equity_at_entry", 0.0),
+                entry_ts=0,
+                hold_candles=0,
+            )
+            # Cancel any stale orders, then place fresh stop/TP
+            await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
+            await self._place_exit_orders(self._position)
+            self._save_position_state()
+            await send_alert(
+                f"*Position Recovered (pending fill)*\n"
+                f"Side: `{saved['side']}`\n"
+                f"Entry: `${saved['entry_price']:.1f}`\n"
+                f"Stop: `${saved['stop_price']:.1f}` | Target: `${saved['target_price']:.1f}`\n"
+                f"Size: `{saved['size_btc']:.5f}` BTC"
+            )
+        else:
+            # Not filled — cancel it
+            logger.info("Pending entry %d not filled — cancelling", oid)
+            try:
+                await asyncio.to_thread(self._client.cancel_order, SYMBOL, oid)
+            except Exception:
+                pass
+
+        self._clear_pending_entry()
+
+    async def _adopt_orphaned_position(self, hl_pos: dict) -> None:
+        """Adopt an orphaned HL position with best-effort stop/target.
+
+        Uses ATR-based stop distance when candle history is available,
+        otherwise falls back to a conservative fixed percentage.
+        """
+        from risk.liquidation import calc_liquidation_price, is_stop_safe
+
+        entry_price = hl_pos["entry_price"]
+        side = hl_pos["side"]
+        size_btc = hl_pos["size_btc"]
+        equity = await self._get_equity()
+
+        # Try to compute stop from recent candle data
+        stop_dist_pct = 0.005  # 0.5% fallback
+        candles = self._store.get_candles(SYMBOL, CANDLE_TF, limit=20)
+        if len(candles) >= 14:
+            highs = [c.high for c in candles]
+            lows = [c.low for c in candles]
+            closes = [c.close for c in candles]
+            # Simple ATR
+            trs = [max(h - l, abs(h - c), abs(l - c))
+                   for h, l, c in zip(highs[1:], lows[1:], closes[:-1])]
+            atr = sum(trs[-14:]) / 14
+            stop_dist_pct = (atr * 1.5) / entry_price
+
+        if side == "long":
+            stop_price = round(entry_price * (1 - stop_dist_pct), 1)
+            target_price = round(entry_price * (1 + stop_dist_pct * 2), 1)
+        else:
+            stop_price = round(entry_price * (1 + stop_dist_pct), 1)
+            target_price = round(entry_price * (1 - stop_dist_pct * 2), 1)
+
+        liq_price = calc_liquidation_price(
+            side, entry_price, self._params.target_leverage,
+            self._params.maintenance_margin_rate,
+        )
+        _, liq_buffer = is_stop_safe(
+            side, entry_price, stop_price, self._params.target_leverage,
+            self._params.maintenance_margin_rate, self._params.min_liquidation_buffer,
+        )
+
+        self._position = PositionState(
+            side=side,
+            entry_price=entry_price,
+            size_btc=size_btc,
+            size_usd=size_btc * entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            liq_price=liq_price,
+            liq_buffer_ratio=liq_buffer,
+            equity_at_entry=equity,
+            entry_ts=0,
+            hold_candles=0,
+        )
+
+        await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
+        await self._place_exit_orders(self._position)
+        self._save_position_state()
+
+        logger.warning(
+            "Adopted orphaned position: %s %.5f BTC @ %.1f (stop=%.1f target=%.1f)",
+            side, size_btc, entry_price, stop_price, target_price,
+        )
+        await send_alert(
+            f"*Orphaned Position Adopted*\n"
+            f"Side: `{side}`\n"
+            f"Entry: `${entry_price:.1f}`\n"
+            f"Size: `{size_btc:.5f}` BTC\n"
+            f"Stop: `${stop_price:.1f}` | Target: `${target_price:.1f}`\n"
+            f"_Stop/target estimated from {'ATR' if len(candles) >= 14 else 'fallback'} — monitor closely_"
+        )
 
     async def _refresh_deadman(self) -> None:
         """Refresh the dead-man switch timer."""
@@ -500,6 +664,11 @@ class LiveEngine:
             if dd_from_peak >= MAX_DRAWDOWN_PCT:
                 self._circuit_breaker = True
                 self._store.set_meta("circuit_breaker", "1")
+                # Cancel all pending orders to prevent fills while halted
+                if self._pending_entry:
+                    self._clear_pending_entry()
+                if not PAPER_MODE:
+                    await asyncio.to_thread(self._client.cancel_all_orders, SYMBOL)
                 logger.warning(
                     "CIRCUIT BREAKER: dd=%.2f%% peak=%.2f equity=%.2f",
                     dd_from_peak * 100, self._peak_equity, equity,
@@ -653,14 +822,14 @@ class LiveEngine:
 
         if status.get("status") == "cancelled":
             logger.info("Entry order cancelled (oid=%d)", oid)
-            self._pending_entry = None
+            self._clear_pending_entry()
             self._pending_signal_dir = None
             self._pending_signal_count = 0
             return
 
         if is_filled:
             await self._on_entry_filled(self._pending_entry, candle_ts)
-            self._pending_entry = None
+            self._clear_pending_entry()
             return
 
         if self._pending_entry.candles_waiting > self._params.entry_expiry_candles:
@@ -669,7 +838,7 @@ class LiveEngine:
                 self._client.cancel_order(SYMBOL, oid)
             else:
                 await asyncio.to_thread(self._client.cancel_order, SYMBOL, oid)
-            self._pending_entry = None
+            self._clear_pending_entry()
             self._pending_signal_dir = None
             self._pending_signal_count = 0
 
@@ -792,6 +961,8 @@ class LiveEngine:
             entry_ts=candle_ts,
         )
 
+        self._save_pending_entry(oid, setup, size_btc, equity)
+
         logger.info(
             "Entry order placed: %s %s %.5f BTC @ %.1f (oid=%d)",
             setup.side, SYMBOL, size_btc, setup.entry_price, oid,
@@ -818,24 +989,7 @@ class LiveEngine:
             signal_context=pending.signal_context,
         )
 
-        # Place stop-loss trigger order on HL
-        is_stop_buy = setup.side == "short"  # buy to close short, sell to close long
-        result = await asyncio.to_thread(
-            self._client.place_trigger_order,
-            SYMBOL, is_stop_buy, size_btc, setup.stop_price, tpsl="sl",
-        )
-        self._position.stop_oid = self._extract_oid(result)
-
-        # Place take-profit limit order
-        is_tp_buy = setup.side == "short"
-        result = await asyncio.to_thread(
-            self._client.place_limit_order,
-            SYMBOL, is_tp_buy, size_btc, setup.target_price,
-            reduce_only=True, post_only=True,
-        )
-        self._position.target_oid = self._extract_oid(result)
-
-        # Persist position state for recovery across restarts
+        await self._place_exit_orders(self._position)
         self._save_position_state()
 
         logger.info(
@@ -958,7 +1112,7 @@ class LiveEngine:
 
         # Check daily halt
         should_halt, halt_reason = check_daily_halt(
-            self._daily_pnl, CAPITAL_USDC, RISK_PER_TRADE,
+            self._daily_pnl, self._daily_start_equity, RISK_PER_TRADE,
             MAX_DAILY_LOSS_MULTIPLIER,
         )
         if should_halt and not self._halted_today:
@@ -999,7 +1153,7 @@ class LiveEngine:
         """Handle a paper mode limit order fill."""
         if self._pending_entry and fill["oid"] == self._pending_entry.oid:
             await self._on_entry_filled(self._pending_entry, candle_ts)
-            self._pending_entry = None
+            self._clear_pending_entry()
 
     async def _get_equity(self) -> float:
         """Get current equity."""

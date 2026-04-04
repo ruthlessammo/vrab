@@ -58,16 +58,15 @@ class HLClient:
         return round(size_btc, self._sz_decimals)
 
     def get_balance(self) -> float:
-        """Get account equity. Handles unified accounts where balance is in spot."""
+        """Get account equity. Works for both classic and unified HL accounts.
+
+        Classic: perps accountValue has everything.
+        Unified: perps shows only margin, spot has full balance.
+        Using max() handles both correctly.
+        """
         state = self._info.user_state(self._wallet_address)
         perps = float(state["crossMarginSummary"]["accountValue"])
 
-        # Classic accounts: perps has the full equity
-        if perps > 0:
-            return perps
-
-        # Unified accounts: perps returns 0, equity is in spot
-        # spot "total" is realized balance, add unrealized PnL from positions
         spot_usdc = 0.0
         try:
             spot_state = self._info.spot_user_state(self._wallet_address)
@@ -75,31 +74,15 @@ class HLClient:
                 if bal["coin"] == "USDC":
                     spot_usdc = float(bal["total"])
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to read spot balance: %s", e)
 
         unrealized_pnl = 0.0
         for ap in state.get("assetPositions", []):
             pos = ap.get("position", {})
             unrealized_pnl += float(pos.get("unrealizedPnl", 0))
 
-        return spot_usdc + unrealized_pnl
-
-    def sweep_spot_to_perps(self) -> None:
-        """Transfer any spot USDC to perps margin. Deposits often land in spot."""
-        try:
-            spot_state = self._info.spot_user_state(self._wallet_address)
-            for bal in spot_state.get("balances", []):
-                if bal["coin"] == "USDC":
-                    available = float(bal["total"]) - float(bal.get("hold", "0"))
-                    if available > 1.0:
-                        result = self._exchange.usd_class_transfer(
-                            amount=available, to_perp=True,
-                        )
-                        logger.info("Swept %.2f USDC spot → perps: %s", available, result)
-                    break
-        except Exception as e:
-            logger.warning("Spot sweep failed: %s", e)
+        return max(perps, spot_usdc + unrealized_pnl)
 
     def get_position(self, symbol: str = "BTC") -> dict | None:
         """Get current position for symbol.
