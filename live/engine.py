@@ -998,6 +998,12 @@ class LiveEngine:
             "Position opened: %s %.5f BTC @ %.1f | stop=%.1f target=%.1f",
             setup.side, size_btc, setup.entry_price, setup.stop_price, setup.target_price,
         )
+        await send_alert(
+            f"*Position Opened*\n"
+            f"Side: `{setup.side}` | Size: `{size_btc:.5f}` BTC\n"
+            f"Entry: `${setup.entry_price:.1f}`\n"
+            f"Stop: `${setup.stop_price:.1f}` | Target: `${setup.target_price:.1f}`"
+        )
 
     async def _calc_live_pnl(self, pos: PositionState, exit_price: float, exit_ts: int) -> dict:
         """Get real PnL from HL fills instead of estimating.
