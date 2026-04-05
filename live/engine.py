@@ -26,7 +26,7 @@ from config import (
     is_kill_switch_active,
 )
 from strategy.core import (
-    TradingParams, CoreDecision, TradeSetup,
+    TradingParams, CoreDecision, TradeSetup, ExitAction,
     build_params_from_config, evaluate_entry, evaluate_exit,
     calc_trade_pnl, check_daily_halt,
 )
@@ -37,6 +37,7 @@ from notifications.telegram import (
 )
 from notifications.bot import TelegramBot
 from live.feed import CandleFeed
+from live.exit_detect import infer_exit, extract_exit_price
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,9 @@ class LiveEngine:
         self.status = EngineStatus(mode=SOURCE)
         self.status.bind(self)
 
+        # Mid-candle exit detection throttle
+        self._last_hl_check: float = 0.0
+
         # Shutdown flag
         self._shutdown = False
 
@@ -246,6 +250,17 @@ class LiveEngine:
                     filled = self._client.check_fills(event["high"], event["low"])
                     for fill in filled:
                         await self._on_paper_fill(fill, candle_ts=0)
+                # Live: detect mid-candle stop/TP fill on HL (throttled 5s)
+                if not PAPER_MODE and self._position:
+                    now = time.time()
+                    if now - self._last_hl_check >= 5.0:
+                        self._last_hl_check = now
+                        try:
+                            hl_pos = await asyncio.to_thread(self._client.get_position, SYMBOL)
+                        except Exception:
+                            hl_pos = True  # assume still open on error
+                        if hl_pos is None:
+                            await self._handle_mid_candle_exit(event["price"])
                 continue
 
             if event.get("type") != "candle_close":
@@ -1082,24 +1097,28 @@ class LiveEngine:
                 except Exception as e:
                     logger.warning("Failed to cancel oid=%s: %s", oid, e)
 
-        # Place exit order
+        # Place exit order (may no-op if HL already closed the position mid-candle)
         is_close_buy = pos.side == "short"
-        if ea.is_maker:
-            result = await asyncio.to_thread(
-                self._client.place_limit_order,
-                SYMBOL, is_close_buy, pos.size_btc, ea.exit_price,
-                reduce_only=True, post_only=False,
-            )
-        else:
-            result = await asyncio.to_thread(
-                self._client.place_market_order,
-                SYMBOL, is_close_buy, pos.size_btc,
-                reduce_only=True,
-            )
+        result = None
+        try:
+            if ea.is_maker:
+                result = await asyncio.to_thread(
+                    self._client.place_limit_order,
+                    SYMBOL, is_close_buy, pos.size_btc, ea.exit_price,
+                    reduce_only=True, post_only=False,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    self._client.place_market_order,
+                    SYMBOL, is_close_buy, pos.size_btc,
+                    reduce_only=True,
+                )
+        except Exception as e:
+            logger.info("Exit order skipped (already closed on HL): %s", e)
 
         # Use actual fill price from HL when available (market orders have slippage)
         exit_price = ea.exit_price
-        if not PAPER_MODE:
+        if not PAPER_MODE and result:
             actual_price = self._extract_fill_price(result)
             if actual_price:
                 exit_price = actual_price
@@ -1260,6 +1279,23 @@ class LiveEngine:
             msg = f"Position mismatch! Local: {self._position}, HL: {hl_pos}"
             logger.error(msg)
             await send_alert(format_error_alert(msg))
+
+    async def _handle_mid_candle_exit(self, current_price: float) -> None:
+        """Handle position closed on HL between candle closes."""
+        pos = self._position
+        fills = await asyncio.to_thread(self._client.get_recent_fills, SYMBOL)
+        close_side = "B" if pos.side == "short" else "A"
+
+        exit_price = extract_exit_price(fills, pos.entry_ts, close_side) or current_price
+        exit_type = infer_exit(pos.side, pos.stop_price, pos.target_price, exit_price)
+
+        logger.info("Mid-candle %s detected at %.1f", exit_type, exit_price)
+
+        decision = CoreDecision(
+            action="exit",
+            exit_action=ExitAction(exit_type=exit_type, exit_price=exit_price, is_maker=False),
+        )
+        await self._execute_exit(decision, int(time.time() * 1000))
 
     async def _graceful_shutdown(self) -> None:
         """Handle SIGINT/SIGTERM — cancel orders, set shutdown flag."""
