@@ -71,8 +71,17 @@ Costs: slippage=-$2.01, entry_fee=+$91.60, exit_fee=-$73.95, funding=+$1.08, reb
 
 **Conclusion**: Strategy is BTC-specific. ETH/SOL would need separate parameter sets and tick size config.
 
-## Market Observations
-[To be filled during live monitoring]
+## Market Observations (Live — April 2026)
+
+### Fill Behavior
+- ALO entries regularly fill across 4-5 partial fills (normal HL behavior for maker orders)
+- "Post only order would have immediately matched" occurs when price is at the ask — signal is valid but timing is aggressive. Now retries as GTC.
+- HL trigger orders (stop-loss) fill reliably mid-candle — server-side execution works as expected
+
+### Early Live Results (4 trades, $120 capital)
+- 3 winners, 1 loser (75% WR early — small sample)
+- Stop hit on first trade due to unrounded price bug (not strategy failure)
+- Target fills happening mid-candle as expected — 5m candle boundary is detection, not execution
 
 ## Future Research Ideas
 - [ ] Historical funding rate integration (replace static 0.01%/hr assumption)
@@ -83,3 +92,6 @@ Costs: slippage=-$2.01, entry_fee=+$91.60, exit_fee=-$73.95, funding=+$1.08, reb
 - [ ] Multi-asset expansion (ETH, SOL — do VWAP reversion dynamics differ?)
 - [ ] ML signal scoring using regime context columns in trades table
 - [ ] Funding rate as alpha (not just filter) — does extreme funding predict reversals?
+- [ ] ALO vs GTC entry analysis — compare fill rates, slippage, and maker rebate impact
+- [ ] Optimal HL position poll frequency (currently 5s) — API rate limits at scale?
+- [ ] Fill aggregation: track partial fill count per entry for execution quality metrics

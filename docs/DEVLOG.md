@@ -120,3 +120,27 @@
 ### Next
 - Paper trading validation (24-48h)
 - Live deployment (PAPER_MODE=False)
+
+## 2026-04-05 — Sprint 3: Live Bug Fixes & Robustness
+
+### Bug Fixes
+- **Price rounding**: Added `_round_price()` to hl_client.py — raw float stops/targets caused HL SDK `float_to_wire()` to reject orders, leaving positions unprotected
+- **TICK_SIZE**: BTC on HL uses 1.0 (whole dollars), not 0.1 — fixed in config.py
+- **closedPnl race condition**: Added 2s delay + retry in `_calc_live_pnl()` — HL fills not indexed immediately after exit
+- **Entry notification**: `_on_entry_filled()` was silent — added Telegram alert on position open
+- **Graceful shutdown**: `feed.stop()` never called `disconnect_websocket()` — WS thread kept running 30s+ until SIGKILL. Added disconnect + `_stopped` guard in callback
+- **Mid-candle exit detection**: Engine only checked exits on 5m candle close. Added throttled (5s) HL position polling on tick events — detects stop/TP fills within seconds via `live/exit_detect.py`
+- **ALO rejection retry**: Post-only orders rejected at ask price — added GTC fallback in `_execute_entry()`
+- **Missed trade on restart**: `_restore_position()` now records trade to DB when position was closed while engine was down, reusing `_handle_mid_candle_exit()`
+
+### New Features
+- `/graduation` Telegram command — 3-gate capital scaling progress tracker
+- `/close` Telegram command — force close any open position
+
+### Architecture
+- `live/exit_detect.py` — pure testable functions for exit type inference and fill price extraction
+- TDD approach adopted: tests written before implementation for all new logic
+- `_execute_exit()` order placement wrapped in try/except for mid-candle exit resilience
+
+### Tests Added
+- `tests/test_mid_candle_exit.py` — 14 tests (infer_exit, extract_exit_price)

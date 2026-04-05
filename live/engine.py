@@ -397,10 +397,16 @@ class LiveEngine:
         hl_pos = await asyncio.to_thread(self._client.get_position, SYMBOL)
 
         if not hl_pos:
-            # Saved position but HL has nothing — position was closed externally
-            logger.warning("Saved position found but HL has no position — clearing stale state")
-            self._clear_position_state()
-            await send_alert("*Position Recovery*: Saved state found but no HL position — cleared stale data")
+            # Saved position but HL has nothing — record the missed trade
+            logger.warning("Saved position found but HL has no position — recording missed trade")
+            self._position = saved
+            mid_price = await asyncio.to_thread(self._client.get_mid_price, SYMBOL)
+            try:
+                await self._handle_mid_candle_exit(mid_price)
+            except Exception as e:
+                logger.warning("Could not record missed trade: %s — clearing stale state", e)
+                self._position = None
+                self._clear_position_state()
             return
 
         # HL has a position — check if it matches saved state
@@ -953,8 +959,18 @@ class LiveEngine:
 
         oid = self._extract_oid(result)
         if oid is None:
-            logger.error("Failed to place entry order: %s", result)
-            return
+            # ALO rejected at ask — retry as GTC (taker)
+            if "Post only" in str(result):
+                logger.info("ALO rejected, retrying as GTC")
+                result = await asyncio.to_thread(
+                    self._client.place_limit_order,
+                    SYMBOL, is_buy, size_btc, setup.entry_price,
+                    reduce_only=False, post_only=False,
+                )
+                oid = self._extract_oid(result)
+            if oid is None:
+                logger.error("Failed to place entry order: %s", result)
+                return
 
         # Capture signal context
         sig = setup.signal_result
