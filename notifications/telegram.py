@@ -175,6 +175,83 @@ def format_trades_list(trades: list) -> str:
     return "\n".join(lines)
 
 
+def format_graduation(trades: list, daily_records: list, equity: float, peak_equity: float, cb_trips: int) -> str:
+    """Format /graduation response showing progress toward capital scaling."""
+    import math
+
+    # --- Compute metrics from live trades ---
+    count = len(trades)
+    wins = sum(1 for t in trades if t.net_pnl > 0)
+    win_rate = wins / count if count else 0.0
+    total_pnl = sum(t.net_pnl for t in trades)
+    expectancy = total_pnl / count if count else 0.0
+    max_dd = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
+
+    # Live Sharpe from daily PnL records
+    if len(daily_records) >= 2:
+        daily_pnls = [r["pnl_usd"] for r in daily_records]
+        mean_pnl = sum(daily_pnls) / len(daily_pnls)
+        var = sum((p - mean_pnl) ** 2 for p in daily_pnls) / (len(daily_pnls) - 1)
+        std_pnl = math.sqrt(var) if var > 0 else 0
+        sharpe = (mean_pnl / std_pnl * math.sqrt(365)) if std_pnl > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    days_running = len(daily_records)
+
+    # --- Gate 1: System Reliability ---
+    g1_days = f"{days_running}/7"
+    g1_pass = days_running >= 7
+    g1_icon = "✅" if g1_pass else "🔄"
+
+    # --- Gate 2: Statistical Significance ---
+    g2_trades = count >= 30
+    g2_wr = win_rate >= 0.30
+    g2_exp = expectancy > 0
+    g2_cb = cb_trips == 0
+    g2_pass = g2_trades and g2_wr and g2_exp and g2_cb
+    g2_icon = "✅" if g2_pass else "🔄"
+
+    def check(val): return "✅" if val else "❌"
+
+    # --- Gate 3: Performance ---
+    g3_pnl = total_pnl > 0
+    g3_sharpe = sharpe >= 1.0
+    g3_dd = max_dd <= 0.10
+    g3_pass = g2_pass and g3_pnl and g3_sharpe and g3_dd
+    g3_icon = "✅" if g3_pass else ("🔄" if g2_pass else "⏳")
+
+    # --- Scaling tier ---
+    if g3_pass:
+        tier = "$120 → `$1,000-$2,000`"
+    elif g2_pass:
+        tier = "$120 → `$500`"
+    else:
+        remaining = 30 - count
+        tier = f"$120 → $500 (need {remaining} more trades)" if remaining > 0 else "$120 → $500"
+
+    lines = [
+        f"*Graduation Status*",
+        f"",
+        f"*Gate 1: Reliability* {g1_icon}",
+        f"  Days: `{g1_days}`",
+        f"",
+        f"*Gate 2: Significance* {g2_icon}",
+        f"  Trades: `{count}/30` {check(g2_trades)}",
+        f"  Win Rate: `{win_rate:.1%}` (>= 30%) {check(g2_wr)}",
+        f"  Expectancy: `{expectancy:+.2f}` {check(g2_exp)}",
+        f"  CB Trips: `{cb_trips}` {check(g2_cb)}",
+        f"",
+        f"*Gate 3: Performance* {g3_icon}",
+        f"  PnL: `{total_pnl:+.2f}` {check(g3_pnl)}",
+        f"  Sharpe: `{sharpe:.2f}` (>= 1.0) {check(g3_sharpe)}",
+        f"  Max DD: `{max_dd:.1%}` (<= 10%) {check(g3_dd)}",
+        f"",
+        f"*Tier*: {tier}",
+    ]
+    return "\n".join(lines)
+
+
 def format_daily_summary(
     date: str,
     pnl: float,

@@ -21,6 +21,7 @@ from data.store import Store
 from notifications.telegram import (
     send_alert,
     format_status, format_pnl_summary, format_equity, format_trades_list,
+    format_graduation,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,7 @@ class TelegramBot:
             "/close": self._cmd_close,
             "/kill": self._cmd_kill,
             "/reset": self._cmd_reset,
+            "/graduation": self._cmd_graduation,
         }
 
         handler = handlers.get(cmd)
@@ -138,7 +140,8 @@ class TelegramBot:
                 "/trades — Recent trades\n"
                 "/close — Force close position\n"
                 "/kill — Emergency stop\n"
-                "/reset — Clear circuit breaker"
+                "/reset — Clear circuit breaker\n"
+                "/graduation — Scaling progress"
             )
 
     async def _cmd_status(self) -> str:
@@ -229,3 +232,15 @@ class TelegramBot:
         self._store.set_meta("peak_equity", str(equity))
         logger.warning("Circuit breaker reset via Telegram (peak=%.2f)", equity)
         return f"*Circuit Breaker Reset*\nPeak equity set to `${equity:.2f}`\nTrading resumed."
+
+    async def _cmd_graduation(self) -> str:
+        """Handle /graduation command — show scaling progress."""
+        source = self._status.mode
+        all_trades = self._store.get_trades(limit=10000)
+        live_trades = [t for t in all_trades if t.source == source]
+        daily_records = self._store.get_daily_pnl(days=90)
+        equity = self._status.equity
+        peak_equity = float(self._store.get_meta("peak_equity") or str(equity))
+        cb_active = self._store.get_meta("circuit_breaker") == "1"
+        cb_trips = 1 if cb_active else 0
+        return format_graduation(live_trades, daily_records, equity, peak_equity, cb_trips)
