@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 class HLClient:
     """Hyperliquid API client wrapping the SDK."""
 
-    def __init__(self, private_key: str, base_url: str, wallet_address: str):
+    def __init__(self, private_key: str, base_url: str, wallet_address: str, tick_size: float = 0.1):
         self._private_key = private_key
         self._base_url = base_url
         self._wallet_address = wallet_address
+        self._tick_size = tick_size
         self._exchange: Exchange | None = None
         self._info: Info | None = None
         self._sz_decimals: int = 5  # BTC default, updated on connect
@@ -56,6 +57,10 @@ class HLClient:
     def _round_size(self, size_btc: float) -> float:
         """Round size to the correct number of decimal places."""
         return round(size_btc, self._sz_decimals)
+
+    def _round_price(self, price: float) -> float:
+        """Round price to tick size (e.g. 0.1 for BTC)."""
+        return round(round(price / self._tick_size) * self._tick_size, 10)
 
     def get_balance(self) -> float:
         """Get account equity. Works for both classic and unified HL accounts.
@@ -134,6 +139,7 @@ class HLClient:
         post_only: bool = True,
     ) -> dict:
         """Place a limit order. Post-only (ALO) by default for maker rebate."""
+        price = self._round_price(price)
         sz = self._round_size(size_btc)
         tif = "Alo" if post_only else "Gtc"
         order_type = {"limit": {"tif": tif}}
@@ -186,6 +192,7 @@ class HLClient:
         tpsl: str = "sl",
     ) -> dict:
         """Place a trigger (stop-loss or take-profit) order on HL."""
+        trigger_price = self._round_price(trigger_price)
         sz = self._round_size(size_btc)
         order_type = {
             "trigger": {

@@ -19,7 +19,7 @@ from config import (
     CAPITAL_USDC, DB_PATH, SYMBOL, CANDLE_TF, TREND_TF,
     TARGET_LEVERAGE, RISK_PER_TRADE,
     MAX_DAILY_LOSS_MULTIPLIER, MAX_DRAWDOWN_PCT,
-    PAPER_MODE,
+    PAPER_MODE, TICK_SIZE,
     HL_PRIVATE_KEY, HL_BASE_URL, HL_WALLET_ADDRESS,
     CANDLE_BACKFILL_COUNT, HEARTBEAT_INTERVAL_CANDLES,
     DAILY_SUMMARY_ENABLED,
@@ -1005,6 +1005,8 @@ class LiveEngine:
         Uses closedPnl (gross) and fee fields from user_fills,
         plus funding from user_funding_history.
         """
+        # Wait for fill indexing on HL before querying
+        await asyncio.sleep(2)
         fills = await asyncio.to_thread(self._client.get_recent_fills, SYMBOL)
 
         # Match fills to this trade by time window
@@ -1014,6 +1016,17 @@ class LiveEngine:
 
         closed_pnl = sum(float(f["closedPnl"]) for f in trade_fills)
         total_fees = sum(float(f["fee"]) for f in trade_fills)
+
+        # Retry once if closedPnl is zero — fill may not be indexed yet
+        if closed_pnl == 0 and trade_fills:
+            logger.info("closedPnl=0 with %d fills, retrying after delay...", len(trade_fills))
+            await asyncio.sleep(5)
+            fills = await asyncio.to_thread(self._client.get_recent_fills, SYMBOL)
+            trade_fills = [f for f in fills
+                           if f["time"] >= pos.entry_ts - 60_000
+                           and f["time"] <= exit_ts + 60_000]
+            closed_pnl = sum(float(f["closedPnl"]) for f in trade_fills)
+            total_fees = sum(float(f["fee"]) for f in trade_fills)
 
         # Funding during hold period
         funding_usd = 0.0
@@ -1312,7 +1325,7 @@ async def main():
             client = PaperClient(CAPITAL_USDC)
         else:
             from live.hl_client import HLClient
-            client = HLClient(HL_PRIVATE_KEY, HL_BASE_URL, HL_WALLET_ADDRESS)
+            client = HLClient(HL_PRIVATE_KEY, HL_BASE_URL, HL_WALLET_ADDRESS, tick_size=TICK_SIZE)
 
         engine = LiveEngine(client, store, params)
         await engine.run()
