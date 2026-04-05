@@ -96,6 +96,8 @@ class CandleFeed:
 
     def _on_candle(self, msg: dict) -> None:
         """WebSocket callback — runs in the SDK's background thread."""
+        if self._stopped:
+            return
         try:
             self._last_msg_time = time.time()
             self._process_candle_msg(msg)
@@ -216,4 +218,8 @@ class CandleFeed:
             except Exception:
                 pass
         self._sub_ids.clear()
+        try:
+            self._info.disconnect_websocket()
+        except Exception:
+            pass
         logger.info("Candle feed stopped")
