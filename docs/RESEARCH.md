@@ -95,3 +95,8 @@ Costs: slippage=-$2.01, entry_fee=+$91.60, exit_fee=-$73.95, funding=+$1.08, reb
 - [ ] ALO vs GTC entry analysis — compare fill rates, slippage, and maker rebate impact
 - [ ] Optimal HL position poll frequency (currently 5s) — API rate limits at scale?
 - [ ] Fill aggregation: track partial fill count per entry for execution quality metrics
+- [ ] Funding drag analysis — 0.01%/hr × 10x on 4h holds adds up. Quantify impact on net PnL
+- [ ] `get_recent_fills` window limits — at $2k+ capital, 20-30 fills per entry. Will the fixed return window miss fills on active days?
+- [ ] GTC fallback slippage tracking — measure taker fee + slippage cost vs lost signals from ALO-only
+- [ ] Infrastructure redundancy — single VM, single process. Evaluate failover options for larger capital
+- [ ] Dead-man switch effectiveness — verify `schedule_cancel` actually fires if process dies mid-position with stop/target already on HL
