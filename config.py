@@ -66,7 +66,7 @@ FUNDING_RATE_BLOCK = 0.0003
 # ---------------------------------------------------------------------------
 MAKER_REBATE_RATE = 0.0002
 TAKER_FEE_RATE = 0.00035
-TICK_SIZE = 0.1
+TICK_SIZE = 1.0
 SLIPPAGE_TICKS_ENTRY = 1
 SLIPPAGE_TICKS_STOP = 3
 
