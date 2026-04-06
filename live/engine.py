@@ -459,10 +459,13 @@ class LiveEngine:
             self._store.set_meta("initial_capital", str(initial_capital))
             logger.info("Initial capital set to %.2f", initial_capital)
 
-        self._store.reconcile_daily_state(initial_capital)
+        self._store.reconcile_daily_state(initial_capital, symbol=SYMBOL, source=SOURCE)
         hot = self._store.get_daily_state()
         self._daily_pnl = hot.daily_pnl_usd
         self._daily_start_equity = hot.daily_start_equity
+        self._trade_count_today = hot.trade_count_today
+        self._signals_today = hot.signals_generated_today
+        self._signals_blocked_today = hot.signals_blocked_today
         self._halted_today = hot.halted
         self._current_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 

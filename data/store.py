@@ -106,6 +106,8 @@ class HotState:
     daily_pnl_usd: float = 0.0
     daily_start_equity: float = 0.0
     trade_count_today: int = 0
+    signals_generated_today: int = 0
+    signals_blocked_today: int = 0
     halted: bool = False
     halt_reason: str | None = None
 
@@ -471,8 +473,10 @@ class Store:
         """Return a snapshot of the current hot state."""
         return self._hot_state
 
-    def reconcile_daily_state(self, capital_usdc: float) -> None:
-        """Rebuild hot state from today's DB trades on startup."""
+    def reconcile_daily_state(
+        self, capital_usdc: float, symbol: str, source: str
+    ) -> None:
+        """Rebuild hot state from today's DB trades and daily_pnl row on startup."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         start_of_day_ms = int(
             datetime.strptime(today, "%Y-%m-%d")
@@ -492,9 +496,29 @@ class Store:
         self._hot_state.daily_pnl_usd = daily_pnl
         self._hot_state.daily_start_equity = start_equity
         self._hot_state.trade_count_today = len(today_trades)
+
+        # Restore signal counters and halted flag from today's daily_pnl row
+        row = self._conn.execute(
+            "SELECT signals_generated, signals_blocked, halted FROM daily_pnl "
+            "WHERE date = ? AND symbol = ? AND source = ?",
+            (today, symbol, source),
+        ).fetchone()
+        if row:
+            self._hot_state.signals_generated_today = row["signals_generated"] or 0
+            self._hot_state.signals_blocked_today = row["signals_blocked"] or 0
+            self._hot_state.halted = bool(row["halted"])
+        else:
+            self._hot_state.signals_generated_today = 0
+            self._hot_state.signals_blocked_today = 0
+            self._hot_state.halted = False
+
         logger.info(
-            "Reconciled daily state: start_equity=%.2f pnl=%.2f trades=%d",
+            "Reconciled daily state: start_equity=%.2f pnl=%.2f trades=%d "
+            "signals=%d blocked=%d halted=%s",
             start_equity, daily_pnl, len(today_trades),
+            self._hot_state.signals_generated_today,
+            self._hot_state.signals_blocked_today,
+            self._hot_state.halted,
         )
 
     def get_meta(self, key: str) -> str | None:

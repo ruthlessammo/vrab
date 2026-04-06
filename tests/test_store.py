@@ -82,6 +82,62 @@ class TestStore:
         assert rows[0]["signal_type"] == "long_entry"
         s.close()
 
+    def test_reconcile_restores_signal_counts(self):
+        """signals_generated/blocked persist in daily_pnl row and reload on reconcile."""
+        from datetime import datetime, timezone
+        s = Store(":memory:")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        s.update_daily_pnl(
+            date_str=today, symbol="BTC", source="live",
+            pnl_usd=12.5, trade_count=3, max_dd_pct=0.0,
+            signals_generated=5, signals_blocked=2,
+        )
+        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        hot = s.get_daily_state()
+        assert hot.signals_generated_today == 5
+        assert hot.signals_blocked_today == 2
+        s.close()
+
+    def test_reconcile_no_daily_row_defaults_zero(self):
+        """Fresh DB with no daily_pnl row → counters are 0."""
+        s = Store(":memory:")
+        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        hot = s.get_daily_state()
+        assert hot.signals_generated_today == 0
+        assert hot.signals_blocked_today == 0
+        s.close()
+
+    def test_reconcile_restores_halted_flag(self):
+        """halted flag persists across reconcile (latent bug regression guard)."""
+        from datetime import datetime, timezone
+        s = Store(":memory:")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        s.update_daily_pnl(
+            date_str=today, symbol="BTC", source="live",
+            pnl_usd=-50.0, trade_count=2, max_dd_pct=5.0,
+            halted=True,
+        )
+        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        hot = s.get_daily_state()
+        assert hot.halted is True
+        s.close()
+
+    def test_reconcile_filters_by_symbol_source(self):
+        """Reconcile only restores counters for matching (symbol, source)."""
+        from datetime import datetime, timezone
+        s = Store(":memory:")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        s.update_daily_pnl(
+            date_str=today, symbol="BTC", source="backtest",
+            pnl_usd=1.0, trade_count=1, max_dd_pct=0.0,
+            signals_generated=9, signals_blocked=9,
+        )
+        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        hot = s.get_daily_state()
+        assert hot.signals_generated_today == 0
+        assert hot.signals_blocked_today == 0
+        s.close()
+
     def test_thread_safety(self):
         """Concurrent writes from 4 threads don't raise."""
         s = Store(":memory:")
