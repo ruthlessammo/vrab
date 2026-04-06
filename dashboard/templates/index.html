@@ -156,7 +156,7 @@
 <div class="table-box">
   <table>
     <thead><tr>
-      <th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Return</th><th>Hold</th><th>Reason</th>
+      <th>Date</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Return</th><th>Hold</th><th>Reason</th>
     </tr></thead>
     <tbody id="trades-body"></tbody>
   </table>
@@ -304,6 +304,15 @@ function updateCharts(dailyData) {
   });
 }
 
+// -- Trade timestamp formatter --
+function formatTradeTime(ts) {
+  if (!ts) return '--';
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
 // -- Trade table + stats --
 function updateTrades(trades) {
   if (!trades) return;
@@ -323,6 +332,7 @@ function updateTrades(trades) {
     tr.className = pnl >= 0 ? 'win' : 'loss';
     const holdMin = t.hold_minutes ? t.hold_minutes.toFixed(0) + 'm' : '--';
     tr.innerHTML = `
+      <td title="Exit: ${formatTradeTime(t.exit_ts)}">${formatTradeTime(t.entry_ts)}</td>
       <td>${t.side}</td>
       <td>${t.entry_price.toFixed(1)}</td>
       <td>${t.exit_price.toFixed(1)}</td>
