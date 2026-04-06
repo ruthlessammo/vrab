@@ -447,19 +447,17 @@ class LiveEngine:
 
     async def _reconcile(self) -> None:
         """Startup reconciliation — sync local state with exchange."""
-        # Determine initial capital: read from HL on first run, persist to DB
-        initial_capital = self._store.get_meta("initial_capital")
-        if initial_capital:
-            initial_capital = float(initial_capital)
-        else:
-            if PAPER_MODE:
-                initial_capital = CAPITAL_USDC
-            else:
-                initial_capital = await self._get_equity()
-            self._store.set_meta("initial_capital", str(initial_capital))
-            logger.info("Initial capital set to %.2f", initial_capital)
+        # Persist initial capital on first run for informational/circuit-breaker use
+        if not self._store.get_meta("initial_capital"):
+            seed = CAPITAL_USDC if PAPER_MODE else await self._get_equity()
+            self._store.set_meta("initial_capital", str(seed))
+            logger.info("Initial capital set to %.2f", seed)
 
-        self._store.reconcile_daily_state(initial_capital, symbol=SYMBOL, source=SOURCE)
+        # Day-start equity comes from the persisted daily_pnl row (seeded if absent)
+        current_equity = await self._get_equity()
+        self._store.reconcile_daily_state(
+            current_equity=current_equity, symbol=SYMBOL, source=SOURCE
+        )
         hot = self._store.get_daily_state()
         self._daily_pnl = hot.daily_pnl_usd
         self._daily_start_equity = hot.daily_start_equity
@@ -469,7 +467,7 @@ class LiveEngine:
         self._halted_today = hot.halted
         self._current_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Sync paper client balance to match true equity
+        # Sync paper client balance to match reconciled equity (paper state is ephemeral)
         if PAPER_MODE:
             self._client._balance = self._daily_start_equity + self._daily_pnl
             logger.info("Paper balance synced to %.2f", self._client._balance)
@@ -854,6 +852,10 @@ class LiveEngine:
         self._signals_blocked_today = 0
         self._daily_max_dd = 0.0
         self._daily_start_equity = await self._get_equity()
+        # Persist the new day's start_equity immediately so any restart sees it
+        self._store.ensure_today_row(
+            symbol=SYMBOL, source=SOURCE, start_equity=self._daily_start_equity
+        )
         logger.info("New trading day: %s", new_day)
 
     async def _check_pending_entry(self, candle_ts: int) -> None:

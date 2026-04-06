@@ -473,49 +473,63 @@ class Store:
         """Return a snapshot of the current hot state."""
         return self._hot_state
 
-    def reconcile_daily_state(
-        self, capital_usdc: float, symbol: str, source: str
-    ) -> None:
-        """Rebuild hot state from today's DB trades and daily_pnl row on startup."""
+    def ensure_today_row(
+        self, symbol: str, source: str, start_equity: float
+    ) -> float:
+        """Ensure today's daily_pnl row exists; return its canonical start_equity.
+
+        If the row already exists, returns the stored start_equity (the input is
+        ignored — first writer wins). If not, inserts a fresh row seeded with
+        the given start_equity and zero counters.
+        """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        start_of_day_ms = int(
-            datetime.strptime(today, "%Y-%m-%d")
-            .replace(tzinfo=timezone.utc)
-            .timestamp() * 1000
-        )
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO daily_pnl
+                   (date, symbol, source, pnl_usd, trade_count, max_dd_pct,
+                    start_equity, end_equity, halted,
+                    signals_generated, signals_blocked)
+                   VALUES (?, ?, ?, 0, 0, 0, ?, ?, 0, 0, 0)""",
+                (today, symbol, source, start_equity, start_equity),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT start_equity FROM daily_pnl "
+                "WHERE date = ? AND symbol = ? AND source = ?",
+                (today, symbol, source),
+            ).fetchone()
+        return float(row["start_equity"])
 
-        # Compute true start-of-day equity from all prior trades
-        prior_trades = self.get_trades(before_ts=start_of_day_ms, limit=10000)
-        prior_pnl = sum(t.net_pnl for t in prior_trades)
-        start_equity = capital_usdc + prior_pnl
+    def reconcile_daily_state(
+        self, current_equity: float, symbol: str, source: str
+    ) -> None:
+        """Restore hot state from today's daily_pnl row, seeding if absent.
 
-        # Today's trades
-        today_trades = self.get_trades(since_ts=start_of_day_ms, limit=1000)
-        daily_pnl = sum(t.net_pnl for t in today_trades)
+        The persisted start_equity is the single source of truth for day-start
+        equity. daily_pnl is derived as current_equity - start_equity.
+        """
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        self._hot_state.daily_pnl_usd = daily_pnl
-        self._hot_state.daily_start_equity = start_equity
-        self._hot_state.trade_count_today = len(today_trades)
+        start_equity = self.ensure_today_row(symbol, source, current_equity)
 
-        # Restore signal counters and halted flag from today's daily_pnl row
         row = self._conn.execute(
-            "SELECT signals_generated, signals_blocked, halted FROM daily_pnl "
-            "WHERE date = ? AND symbol = ? AND source = ?",
+            """SELECT trade_count, signals_generated, signals_blocked, halted
+               FROM daily_pnl WHERE date = ? AND symbol = ? AND source = ?""",
             (today, symbol, source),
         ).fetchone()
-        if row:
-            self._hot_state.signals_generated_today = row["signals_generated"] or 0
-            self._hot_state.signals_blocked_today = row["signals_blocked"] or 0
-            self._hot_state.halted = bool(row["halted"])
-        else:
-            self._hot_state.signals_generated_today = 0
-            self._hot_state.signals_blocked_today = 0
-            self._hot_state.halted = False
+
+        self._hot_state.daily_start_equity = start_equity
+        self._hot_state.daily_pnl_usd = current_equity - start_equity
+        self._hot_state.trade_count_today = row["trade_count"] or 0
+        self._hot_state.signals_generated_today = row["signals_generated"] or 0
+        self._hot_state.signals_blocked_today = row["signals_blocked"] or 0
+        self._hot_state.halted = bool(row["halted"])
 
         logger.info(
-            "Reconciled daily state: start_equity=%.2f pnl=%.2f trades=%d "
-            "signals=%d blocked=%d halted=%s",
-            start_equity, daily_pnl, len(today_trades),
+            "Reconciled daily state: start_equity=%.2f current_equity=%.2f "
+            "pnl=%.2f trades=%d signals=%d blocked=%d halted=%s",
+            start_equity, current_equity, self._hot_state.daily_pnl_usd,
+            self._hot_state.trade_count_today,
             self._hot_state.signals_generated_today,
             self._hot_state.signals_blocked_today,
             self._hot_state.halted,

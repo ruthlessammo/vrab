@@ -82,6 +82,76 @@ class TestStore:
         assert rows[0]["signal_type"] == "long_entry"
         s.close()
 
+    def test_ensure_today_row_creates_new(self):
+        """ensure_today_row inserts a row if none exists and returns the seeded value."""
+        s = Store(":memory:")
+        result = s.ensure_today_row(symbol="BTC", source="live", start_equity=125.0)
+        assert result == 125.0
+        rows = s._conn.execute("SELECT * FROM daily_pnl").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["start_equity"] == 125.0
+        assert rows[0]["pnl_usd"] == 0.0
+        assert rows[0]["trade_count"] == 0
+        s.close()
+
+    def test_ensure_today_row_idempotent(self):
+        """Calling ensure_today_row twice keeps the FIRST start_equity."""
+        s = Store(":memory:")
+        first = s.ensure_today_row(symbol="BTC", source="live", start_equity=100.0)
+        second = s.ensure_today_row(symbol="BTC", source="live", start_equity=999.0)
+        assert first == 100.0
+        assert second == 100.0
+        rows = s._conn.execute("SELECT * FROM daily_pnl").fetchall()
+        assert len(rows) == 1
+        s.close()
+
+    def test_ensure_today_row_preserves_counters(self):
+        """ensure_today_row must not clobber existing pnl/trades/signals."""
+        from datetime import datetime, timezone
+        s = Store(":memory:")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        s.update_daily_pnl(
+            date_str=today, symbol="BTC", source="live",
+            pnl_usd=10.0, trade_count=2, max_dd_pct=1.0,
+            start_equity=100.0, signals_generated=5, signals_blocked=1,
+        )
+        result = s.ensure_today_row(symbol="BTC", source="live", start_equity=999.0)
+        assert result == 100.0
+        rows = s._conn.execute("SELECT * FROM daily_pnl").fetchall()
+        assert rows[0]["pnl_usd"] == 10.0
+        assert rows[0]["trade_count"] == 2
+        assert rows[0]["signals_generated"] == 5
+        s.close()
+
+    def test_reconcile_seeds_first_day(self):
+        """Fresh DB → reconcile creates today's row with start_equity = current_equity."""
+        s = Store(":memory:")
+        s.reconcile_daily_state(current_equity=125.0, symbol="BTC", source="live")
+        hot = s.get_daily_state()
+        assert hot.daily_start_equity == 125.0
+        assert hot.daily_pnl_usd == 0.0
+        assert hot.signals_generated_today == 0
+        assert hot.signals_blocked_today == 0
+        assert hot.trade_count_today == 0
+        assert hot.halted is False
+        s.close()
+
+    def test_reconcile_uses_persisted_start_equity(self):
+        """If today's row exists, reconcile uses its start_equity (not current)."""
+        from datetime import datetime, timezone
+        s = Store(":memory:")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        s.update_daily_pnl(
+            date_str=today, symbol="BTC", source="live",
+            pnl_usd=0.0, trade_count=0, max_dd_pct=0.0,
+            start_equity=100.0,
+        )
+        s.reconcile_daily_state(current_equity=110.0, symbol="BTC", source="live")
+        hot = s.get_daily_state()
+        assert hot.daily_start_equity == 100.0
+        assert hot.daily_pnl_usd == 10.0  # 110 - 100
+        s.close()
+
     def test_reconcile_restores_signal_counts(self):
         """signals_generated/blocked persist in daily_pnl row and reload on reconcile."""
         from datetime import datetime, timezone
@@ -90,21 +160,13 @@ class TestStore:
         s.update_daily_pnl(
             date_str=today, symbol="BTC", source="live",
             pnl_usd=12.5, trade_count=3, max_dd_pct=0.0,
-            signals_generated=5, signals_blocked=2,
+            start_equity=120.0, signals_generated=5, signals_blocked=2,
         )
-        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        s.reconcile_daily_state(current_equity=132.5, symbol="BTC", source="live")
         hot = s.get_daily_state()
         assert hot.signals_generated_today == 5
         assert hot.signals_blocked_today == 2
-        s.close()
-
-    def test_reconcile_no_daily_row_defaults_zero(self):
-        """Fresh DB with no daily_pnl row → counters are 0."""
-        s = Store(":memory:")
-        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
-        hot = s.get_daily_state()
-        assert hot.signals_generated_today == 0
-        assert hot.signals_blocked_today == 0
+        assert hot.trade_count_today == 3
         s.close()
 
     def test_reconcile_restores_halted_flag(self):
@@ -115,25 +177,27 @@ class TestStore:
         s.update_daily_pnl(
             date_str=today, symbol="BTC", source="live",
             pnl_usd=-50.0, trade_count=2, max_dd_pct=5.0,
-            halted=True,
+            start_equity=120.0, halted=True,
         )
-        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        s.reconcile_daily_state(current_equity=70.0, symbol="BTC", source="live")
         hot = s.get_daily_state()
         assert hot.halted is True
         s.close()
 
     def test_reconcile_filters_by_symbol_source(self):
-        """Reconcile only restores counters for matching (symbol, source)."""
+        """A row for a different (symbol, source) doesn't bleed into reconcile."""
         from datetime import datetime, timezone
         s = Store(":memory:")
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         s.update_daily_pnl(
             date_str=today, symbol="BTC", source="backtest",
             pnl_usd=1.0, trade_count=1, max_dd_pct=0.0,
-            signals_generated=9, signals_blocked=9,
+            start_equity=500.0, signals_generated=9, signals_blocked=9,
         )
-        s.reconcile_daily_state(1000.0, symbol="BTC", source="live")
+        s.reconcile_daily_state(current_equity=125.0, symbol="BTC", source="live")
         hot = s.get_daily_state()
+        # Live row was seeded fresh with current_equity, not the backtest row
+        assert hot.daily_start_equity == 125.0
         assert hot.signals_generated_today == 0
         assert hot.signals_blocked_today == 0
         s.close()
