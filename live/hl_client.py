@@ -226,11 +226,14 @@ class HLClient:
         fills = self._info.user_fills(self._wallet_address)
         return [f for f in fills if f["coin"] == symbol]
 
-    def get_funding_history(self, start_time_ms: int, end_time_ms: int) -> list[dict]:
-        """Get funding payments for a time range."""
-        return self._info.user_funding_history(
+    def get_funding_history(self, start_time_ms: int, end_time_ms: int, symbol: str | None = None) -> list[dict]:
+        """Get funding payments for a time range, optionally filtered by coin."""
+        records = self._info.user_funding_history(
             self._wallet_address, start_time_ms, end_time_ms,
         )
+        if symbol:
+            records = [r for r in records if r.get("coin") == symbol]
+        return records
 
     def cancel_all_orders(self, symbol: str = "BTC") -> None:
         """Cancel all open orders for symbol."""

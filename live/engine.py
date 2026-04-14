@@ -38,6 +38,7 @@ from notifications.telegram import (
 from notifications.bot import TelegramBot
 from live.feed import CandleFeed
 from live.exit_detect import infer_exit, extract_exit_price
+from live.pnl import calc_pnl_from_fills
 
 logger = logging.getLogger(__name__)
 
@@ -728,6 +729,9 @@ class LiveEngine:
         self._store.set_meta("live_equity", str(equity))
         self._store.set_meta("live_daily_pnl", str(self._daily_pnl))
 
+        # --- Sync daily_pnl table every candle so dashboard /api/daily stays fresh ---
+        self._persist_daily_pnl(equity)
+
         # --- Periodic tasks (run regardless of position state) ---
         if self._candle_count % HEARTBEAT_INTERVAL_CANDLES == 0:
             await self._heartbeat(equity)
@@ -830,23 +834,27 @@ class LiveEngine:
         # --- No position, no pending: process entry ---
         await self._process_entry(entry_decision, candle_ts, equity, funding_rate)
 
+    def _persist_daily_pnl(self, end_equity: float) -> None:
+        """Update daily PnL table with current metrics."""
+        self._store.update_daily_pnl(
+            date_str=self._current_day,
+            symbol=SYMBOL,
+            pnl_usd=self._daily_pnl,
+            trade_count=self._trade_count_today,
+            max_dd_pct=self._daily_max_dd,
+            source=SOURCE,
+            start_equity=self._daily_start_equity,
+            end_equity=end_equity,
+            halted=self._halted_today,
+            signals_generated=self._signals_today,
+            signals_blocked=self._signals_blocked_today,
+        )
+
     async def _finalize_day(self, new_day: str) -> None:
         """Finalize previous day's PnL, send summary, reset counters."""
         if self._current_day is not None:
             prev_equity = await self._get_equity()
-            self._store.update_daily_pnl(
-                date_str=self._current_day,
-                symbol=SYMBOL,
-                pnl_usd=self._daily_pnl,
-                trade_count=self._trade_count_today,
-                max_dd_pct=self._daily_max_dd,
-                source=SOURCE,
-                start_equity=self._daily_start_equity,
-                end_equity=prev_equity,
-                halted=self._halted_today,
-                signals_generated=self._signals_today,
-                signals_blocked=self._signals_blocked_today,
-            )
+            self._persist_daily_pnl(prev_equity)
             if DAILY_SUMMARY_ENABLED:
                 summary = format_daily_summary(
                     date=self._current_day,
@@ -1058,8 +1066,8 @@ class LiveEngine:
     async def _calc_live_pnl(self, pos: PositionState, exit_price: float, exit_ts: int) -> dict:
         """Get real PnL from HL fills instead of estimating.
 
-        Uses closedPnl (gross) and fee fields from user_fills,
-        plus funding from user_funding_history.
+        Uses calc_pnl_from_fills for the pure calculation.
+        HL closedPnl already includes fees — no double-subtraction.
         """
         # Wait for fill indexing on HL before querying
         await asyncio.sleep(2)
@@ -1070,10 +1078,8 @@ class LiveEngine:
                        if f["time"] >= pos.entry_ts - 60_000
                        and f["time"] <= exit_ts + 60_000]
 
-        closed_pnl = sum(float(f["closedPnl"]) for f in trade_fills)
-        total_fees = sum(float(f["fee"]) for f in trade_fills)
-
         # Retry once if closedPnl is zero — fill may not be indexed yet
+        closed_pnl = sum(float(f["closedPnl"]) for f in trade_fills)
         if closed_pnl == 0 and trade_fills:
             logger.info("closedPnl=0 with %d fills, retrying after delay...", len(trade_fills))
             await asyncio.sleep(5)
@@ -1081,40 +1087,33 @@ class LiveEngine:
             trade_fills = [f for f in fills
                            if f["time"] >= pos.entry_ts - 60_000
                            and f["time"] <= exit_ts + 60_000]
-            closed_pnl = sum(float(f["closedPnl"]) for f in trade_fills)
-            total_fees = sum(float(f["fee"]) for f in trade_fills)
 
         # Funding during hold period
         funding_usd = 0.0
         if pos.entry_ts > 0:
             try:
                 funding_records = await asyncio.to_thread(
-                    self._client.get_funding_history, pos.entry_ts, exit_ts)
+                    self._client.get_funding_history, pos.entry_ts, exit_ts,
+                    symbol=SYMBOL)
                 for r in funding_records:
                     delta = r.get("delta", {})
                     funding_usd += float(delta.get("usdc", 0))
             except Exception as e:
                 logger.warning("Failed to fetch funding history: %s", e)
 
-        # closedPnl = gross price movement. Net = closedPnl - fees + funding.
-        net_pnl = closed_pnl - total_fees + funding_usd
         equity = pos.equity_at_entry if pos.equity_at_entry > 0 else 1.0
-
-        logger.info(
-            "Live PnL: closedPnl=%.4f fees=%.4f funding=%.4f net=%.4f (fills=%d)",
-            closed_pnl, total_fees, funding_usd, net_pnl, len(trade_fills),
+        result = calc_pnl_from_fills(
+            trade_fills, funding_usd=funding_usd, equity=equity,
         )
 
-        return {
-            "pnl_usd": closed_pnl,
-            "slippage_usd": 0.0,
-            "entry_fee_usd": -total_fees,
-            "exit_fee_usd": 0.0,
-            "funding_usd": funding_usd,
-            "maker_rebate_usd": 0.0,
-            "net_pnl_usd": net_pnl,
-            "equity_return_pct": net_pnl / equity,
-        }
+        logger.info(
+            "Live PnL: gross=%.4f entry_fee=%.4f exit_fee=%.4f "
+            "funding=%.4f net=%.4f (fills=%d)",
+            result["pnl_usd"], result["entry_fee_usd"], result["exit_fee_usd"],
+            result["funding_usd"], result["net_pnl_usd"], len(trade_fills),
+        )
+
+        return result
 
     async def _execute_exit(self, decision: CoreDecision, candle_ts: int) -> None:
         """Execute an exit — cancel existing orders, close position, record trade."""
@@ -1224,19 +1223,7 @@ class LiveEngine:
             self._daily_max_dd = max(self._daily_max_dd, dd_pct)
 
         # Persist daily PnL to DB
-        self._store.update_daily_pnl(
-            date_str=self._current_day,
-            symbol=SYMBOL,
-            pnl_usd=self._daily_pnl,
-            trade_count=self._trade_count_today,
-            max_dd_pct=self._daily_max_dd,
-            source=SOURCE,
-            start_equity=self._daily_start_equity,
-            end_equity=current_equity,
-            halted=self._halted_today,
-            signals_generated=self._signals_today,
-            signals_blocked=self._signals_blocked_today,
-        )
+        self._persist_daily_pnl(current_equity)
 
         # Check daily halt
         should_halt, halt_reason = check_daily_halt(
