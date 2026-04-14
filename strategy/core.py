@@ -85,7 +85,7 @@ class TradeSetup:
 @dataclass
 class ExitAction:
     """Exit decision."""
-    exit_type: str  # "stop" | "target" | "signal" | "timeout"
+    exit_type: str  # "stop" | "target" | "signal" | "timeout" | "circuit_breaker"
     exit_price: float
     is_maker: bool
     signal_result: SignalResult | None = None

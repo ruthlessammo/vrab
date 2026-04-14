@@ -698,10 +698,24 @@ class LiveEngine:
                     "CIRCUIT BREAKER: dd=%.2f%% peak=%.2f equity=%.2f",
                     dd_from_peak * 100, self._peak_equity, equity,
                 )
+                # Close any open position — never halt with naked exposure
+                pos_msg = ""
+                if self._position:
+                    logger.warning("CIRCUIT BREAKER: closing open %s position", self._position.side)
+                    decision = CoreDecision(
+                        action="exit",
+                        exit_action=ExitAction(
+                            exit_type="circuit_breaker",
+                            exit_price=self._position.stop_price,
+                            is_maker=False,
+                        ),
+                    )
+                    await self._execute_exit(decision, int(time.time() * 1000))
+                    pos_msg = f"\nPosition closed at market"
                 await send_alert(
                     f"*CIRCUIT BREAKER TRIGGERED*\n"
                     f"Drawdown: `{dd_from_peak:.2%}` from peak `${self._peak_equity:.2f}`\n"
-                    f"Current equity: `${equity:.2f}`\n"
+                    f"Current equity: `${equity:.2f}`{pos_msg}\n"
                     f"Send /reset to resume trading"
                 )
                 return

@@ -295,6 +295,11 @@ def generate_signal(
 
     # 8-9. Long entry
     if sigma <= -entry_sigma:
+        if regime.trend_direction == "down":
+            return _result(
+                "none", sigma=sigma, vwap_st=vwap_state, regime=regime,
+                block="counter_trend_long",
+            )
         if funding_rate > funding_block_threshold:
             return _result(
                 "none", sigma=sigma, vwap_st=vwap_state, regime=regime,
@@ -308,6 +313,11 @@ def generate_signal(
 
     # 10-11. Short entry
     if sigma >= entry_sigma:
+        if regime.trend_direction == "up":
+            return _result(
+                "none", sigma=sigma, vwap_st=vwap_state, regime=regime,
+                block="counter_trend_short",
+            )
         if funding_rate < -funding_block_threshold:
             return _result(
                 "none", sigma=sigma, vwap_st=vwap_state, regime=regime,

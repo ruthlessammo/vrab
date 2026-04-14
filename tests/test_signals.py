@@ -228,3 +228,69 @@ class TestGenerateSignal:
             vwap_window=96,
         )
         assert sig.signal == "exit_short"
+
+    def test_short_blocked_in_uptrend(self):
+        """Short entry should be blocked when trend_direction is 'up'."""
+        n = 100
+        c = flat_candles(50000, n)
+        # Price well above VWAP → would trigger short_entry
+        c["closes"][-1] = 52000
+        c["highs"][-1] = 52100
+        c["lows"][-1] = 51900
+        # Trend candles: mostly flat but last close above EMA → trend_direction="up"
+        # Use flat data with last few candles nudged up to get EMA crossover
+        trend = flat_candles(50000, n)
+        for i in range(n - 5, n):
+            trend["closes"][i] = 50200
+            trend["highs"][i] = 50300
+            trend["lows"][i] = 50100
+        sig = generate_signal(
+            closes=c["closes"], highs=c["highs"],
+            lows=c["lows"], volumes=c["volumes"],
+            trend_closes=trend["closes"], trend_highs=trend["highs"],
+            trend_lows=trend["lows"], current_position_side=None,
+            vwap_window=96, adx_threshold=99.0,  # disable regime filter to isolate counter-trend
+        )
+        assert sig.signal == "none"
+        assert "counter_trend" in sig.block_reason
+
+    def test_long_blocked_in_downtrend(self):
+        """Long entry should be blocked when trend_direction is 'down'."""
+        n = 100
+        c = flat_candles(50000, n)
+        # Price well below VWAP → would trigger long_entry
+        c["closes"][-1] = 48000
+        c["highs"][-1] = 48100
+        c["lows"][-1] = 47900
+        # Trend candles: mostly flat but last few candles nudged down → trend_direction="down"
+        trend = flat_candles(50000, n)
+        for i in range(n - 5, n):
+            trend["closes"][i] = 49800
+            trend["highs"][i] = 49900
+            trend["lows"][i] = 49700
+        sig = generate_signal(
+            closes=c["closes"], highs=c["highs"],
+            lows=c["lows"], volumes=c["volumes"],
+            trend_closes=trend["closes"], trend_highs=trend["highs"],
+            trend_lows=trend["lows"], current_position_side=None,
+            vwap_window=96, adx_threshold=99.0,
+        )
+        assert sig.signal == "none"
+        assert "counter_trend" in sig.block_reason
+
+    def test_short_allowed_in_flat_regime(self):
+        """Short entry should still work when trend is flat."""
+        n = 100
+        c = flat_candles(50000, n)
+        c["closes"][-1] = 52000
+        c["highs"][-1] = 52100
+        c["lows"][-1] = 51900
+        trend = flat_candles(50000, n)
+        sig = generate_signal(
+            closes=c["closes"], highs=c["highs"],
+            lows=c["lows"], volumes=c["volumes"],
+            trend_closes=trend["closes"], trend_highs=trend["highs"],
+            trend_lows=trend["lows"], current_position_side=None,
+            vwap_window=96,
+        )
+        assert sig.signal == "short_entry"
