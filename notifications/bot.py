@@ -250,6 +250,7 @@ class TelegramBot:
         if not self._engine:
             return "*Error*: Engine reference not available"
         self._engine._paused = False
+        self._engine._halted_today = False
         logger.info("Trading resumed via Telegram")
         return "*Trading Resumed*\nNew entries enabled."
 
