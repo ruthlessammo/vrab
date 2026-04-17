@@ -151,6 +151,7 @@ class LiveEngine:
         self._current_day: str | None = None
         self._daily_pnl: float = 0.0
         self._halted_today: bool = False
+        self._paused: bool = False
         self._trade_count_today: int = 0
         self._signals_today: int = 0
         self._signals_blocked_today: int = 0
@@ -829,8 +830,8 @@ class LiveEngine:
                 await self._execute_exit(exit_decision, candle_ts)
             return
 
-        # --- If halted, skip entries ---
-        if self._halted_today:
+        # --- If halted or paused, skip entries ---
+        if self._halted_today or self._paused:
             return
 
         # --- Check pending entry order ---

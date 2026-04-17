@@ -3,7 +3,7 @@
 Runs as a background task in the engine's event loop.
 Only responds to messages from the configured TELEGRAM_CHAT_ID.
 
-Commands: /status, /pnl, /equity, /trades, /kill, /reset
+Commands: /status, /pnl, /equity, /trades, /pause, /resume, /kill, /reset
 """
 
 import asyncio
@@ -120,6 +120,8 @@ class TelegramBot:
             "/close": self._cmd_close,
             "/kill": self._cmd_kill,
             "/reset": self._cmd_reset,
+            "/pause": self._cmd_pause,
+            "/resume": self._cmd_resume,
             "/graduation": self._cmd_graduation,
         }
 
@@ -139,6 +141,8 @@ class TelegramBot:
                 "/equity — Total equity\n"
                 "/trades — Recent trades\n"
                 "/close — Force close position\n"
+                "/pause — Pause new entries\n"
+                "/resume — Resume trading\n"
                 "/kill — Emergency stop\n"
                 "/reset — Clear circuit breaker\n"
                 "/graduation — Scaling progress"
@@ -232,6 +236,22 @@ class TelegramBot:
         self._store.set_meta("peak_equity", str(equity))
         logger.warning("Circuit breaker reset via Telegram (peak=%.2f)", equity)
         return f"*Circuit Breaker Reset*\nPeak equity set to `${equity:.2f}`\nTrading resumed."
+
+    async def _cmd_pause(self) -> str:
+        """Handle /pause command — stop new entries, keep monitoring exits."""
+        if not self._engine:
+            return "*Error*: Engine reference not available"
+        self._engine._paused = True
+        logger.info("Trading paused via Telegram")
+        return "*Trading Paused*\nNo new entries. Open positions still monitored."
+
+    async def _cmd_resume(self) -> str:
+        """Handle /resume command — resume taking new entries."""
+        if not self._engine:
+            return "*Error*: Engine reference not available"
+        self._engine._paused = False
+        logger.info("Trading resumed via Telegram")
+        return "*Trading Resumed*\nNew entries enabled."
 
     async def _cmd_graduation(self) -> str:
         """Handle /graduation command — show scaling progress."""
