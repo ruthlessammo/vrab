@@ -50,6 +50,7 @@ ENTRY_EXPIRY_CANDLES = 2
 TREND_EMA_PERIOD = 15
 ADX_PERIOD = 14
 ADX_THRESHOLD = 35.0            # sweep: 35 (was 30, allows mildly trending setups)
+COUNTER_TREND_MIN_ADX = 20.0    # only apply counter-trend filter when ADX >= this
 
 # ---------------------------------------------------------------------------
 # Risk
@@ -96,6 +97,7 @@ DAILY_SUMMARY_ENABLED = True            # send end-of-day summary via Telegram
 CANDLE_BACKFILL_COUNT = 200             # candles to backfill on startup per TF
 HEARTBEAT_INTERVAL_CANDLES = 12         # log heartbeat every 12 candles (1 hour)
 WS_RECONNECT_MAX_BACKOFF = 30           # max reconnect backoff in seconds
+SHADOW_BOOK_ENABLED = True              # track hypothetical PnL of blocked trades
 
 # ---------------------------------------------------------------------------
 # Paths

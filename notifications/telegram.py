@@ -252,6 +252,27 @@ def format_graduation(trades: list, daily_records: list, equity: float, peak_equ
     return "\n".join(lines)
 
 
+def format_blocked_signal(
+    signal_type: str,
+    block_reason: str,
+    price: float,
+    vwap: float,
+    sigma: float,
+    adx: float,
+    trend: str,
+) -> str:
+    """Format a blocked entry signal alert."""
+    side = "LONG" if "long" in signal_type else "SHORT"
+    sigma_bar = _sigma_bar(sigma)
+    return (
+        f"*Signal Blocked* — {side}\n"
+        f"Reason: `{block_reason}`\n"
+        f"Price: `{price:.1f}` | VWAP: `{vwap:.1f}`\n"
+        f"σ: `{sigma:+.2f}` {sigma_bar}\n"
+        f"ADX: `{adx:.1f}` | Trend: `{trend}`"
+    )
+
+
 def format_daily_summary(
     date: str,
     pnl: float,

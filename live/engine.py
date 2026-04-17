@@ -33,12 +33,13 @@ from strategy.core import (
 from data.store import Store, Trade, Candle
 from notifications.telegram import (
     send_alert, format_trade_alert, format_halt_alert, format_error_alert,
-    format_daily_summary,
+    format_daily_summary, format_blocked_signal,
 )
 from notifications.bot import TelegramBot
 from live.feed import CandleFeed
 from live.exit_detect import infer_exit, extract_exit_price
 from live.pnl import calc_pnl_from_fills
+from strategy.shadow import ShadowBook
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,12 @@ class LiveEngine:
         # Shared status for Telegram bot
         self.status = EngineStatus(mode=SOURCE)
         self.status.bind(self)
+
+        # Shadow book for blocked trade tracking
+        from config import SHADOW_BOOK_ENABLED
+        self._shadow_book: ShadowBook | None = (
+            ShadowBook(params) if SHADOW_BOOK_ENABLED else None
+        )
 
         # Mid-candle exit detection throttle
         self._last_hl_check: float = 0.0
@@ -834,6 +841,14 @@ class LiveEngine:
         # --- No position, no pending: process entry ---
         await self._process_entry(entry_decision, candle_ts, equity, funding_rate)
 
+        # --- Process shadow positions ---
+        if self._shadow_book:
+            completed = self._shadow_book.on_candle(
+                candle.high, candle.low, candle.close, candle_ts,
+            )
+            for st in completed:
+                self._store.record_shadow_trade(st)
+
     def _persist_daily_pnl(self, end_equity: float) -> None:
         """Update daily PnL table with current metrics."""
         self._store.update_daily_pnl(
@@ -873,6 +888,8 @@ class LiveEngine:
         self._signals_today = 0
         self._signals_blocked_today = 0
         self._daily_max_dd = 0.0
+        if self._shadow_book:
+            self._shadow_book.clear()
         self._daily_start_equity = await self._get_equity()
         # Persist the new day's start_equity immediately so any restart sees it
         self._store.ensure_today_row(
@@ -945,6 +962,20 @@ class LiveEngine:
             )
 
         if entry_decision.action == "skip":
+            if sig and sig.signal in ("long_entry", "short_entry") and entry_decision.block_reason:
+                await send_alert(format_blocked_signal(
+                    signal_type=sig.signal,
+                    block_reason=entry_decision.block_reason,
+                    price=sig.price,
+                    vwap=sig.vwap_state.vwap if sig.vwap_state else 0,
+                    sigma=sig.sigma_dist,
+                    adx=sig.regime.adx if sig.regime else 0,
+                    trend=sig.regime.trend_direction if sig.regime else "?",
+                ))
+                if self._shadow_book:
+                    self._shadow_book.on_blocked_entry(
+                        entry_decision, candle_ts, equity,
+                    )
             if sig and sig.signal in ("long_entry", "short_entry"):
                 if sig.signal == self._pending_signal_dir:
                     self._pending_signal_count += 1

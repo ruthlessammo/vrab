@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 
 from config import (
     VWAP_WINDOW, VWAP_ENTRY_SIGMA, VWAP_EXIT_SIGMA, VWAP_STOP_SIGMA,
-    TREND_EMA_PERIOD, ADX_PERIOD, ADX_THRESHOLD, FUNDING_RATE_BLOCK,
+    TREND_EMA_PERIOD, ADX_PERIOD, ADX_THRESHOLD, COUNTER_TREND_MIN_ADX,
+    FUNDING_RATE_BLOCK,
     BACKTEST_HOURLY_FUNDING_RATE, BACKTEST_FILL_RATE,
     CAPITAL_USDC, RISK_PER_TRADE,
     MAKER_REBATE_RATE, TAKER_FEE_RATE, TICK_SIZE,
@@ -351,6 +352,7 @@ def simulate_window(
             max_hold_candles=max_hold_candles,
             hourly_funding_rate=BACKTEST_HOURLY_FUNDING_RATE,
             entry_expiry_candles=ENTRY_EXPIRY_CANDLES,
+            counter_trend_min_adx=COUNTER_TREND_MIN_ADX,
         )
 
     trades: list[BTTrade] = []

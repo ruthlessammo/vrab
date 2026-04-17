@@ -14,7 +14,7 @@ from strategy.core import TradingParams
 from config import (
     CAPITAL_USDC, RISK_PER_TRADE, TARGET_LEVERAGE, DB_PATH,
     VWAP_EXIT_SIGMA, TREND_EMA_PERIOD, ADX_PERIOD, ADX_THRESHOLD,
-    FUNDING_RATE_BLOCK,
+    FUNDING_RATE_BLOCK, COUNTER_TREND_MIN_ADX,
     MAX_LEVERAGE, MIN_LIQUIDATION_BUFFER, MARGIN_UTILISATION_CAP,
     HL_MAINTENANCE_MARGIN, MAKER_REBATE_RATE, TAKER_FEE_RATE,
     TICK_SIZE, SLIPPAGE_TICKS_ENTRY, SLIPPAGE_TICKS_STOP,
@@ -58,6 +58,7 @@ def _make_params(entry_sigma, stop_sigma, vwap_window, adx_threshold) -> Trading
         max_hold_candles=48,
         hourly_funding_rate=BACKTEST_HOURLY_FUNDING_RATE,
         entry_expiry_candles=ENTRY_EXPIRY_CANDLES,
+        counter_trend_min_adx=COUNTER_TREND_MIN_ADX,
     )
 
 

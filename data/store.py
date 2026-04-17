@@ -215,6 +215,35 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_signals_lookup
                     ON signals (symbol, tf, ts DESC);
 
+                CREATE TABLE IF NOT EXISTS shadow_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'live',
+                    block_reason TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    exit_price REAL NOT NULL,
+                    stop_price REAL,
+                    target_price REAL,
+                    size_usd REAL NOT NULL,
+                    entry_ts INTEGER NOT NULL,
+                    exit_ts INTEGER NOT NULL,
+                    hold_candles INTEGER,
+                    exit_reason TEXT NOT NULL,
+                    pnl_usd REAL NOT NULL DEFAULT 0,
+                    net_pnl_usd REAL NOT NULL DEFAULT 0,
+                    slippage_usd REAL NOT NULL DEFAULT 0,
+                    entry_fee_usd REAL NOT NULL DEFAULT 0,
+                    exit_fee_usd REAL NOT NULL DEFAULT 0,
+                    funding_usd REAL NOT NULL DEFAULT 0,
+                    sigma_at_entry REAL,
+                    adx_at_entry REAL,
+                    trend_direction_at_entry TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_shadow_trades_ts
+                    ON shadow_trades (symbol, entry_ts DESC);
+
                 CREATE TABLE IF NOT EXISTS daily_pnl (
                     date TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -355,6 +384,34 @@ class Store:
         self._hot_state.daily_pnl_usd += trade.net_pnl
         self._hot_state.trade_count_today += 1
         return trade_id
+
+    def record_shadow_trade(self, st) -> int:
+        """Write shadow trade to DB. Does NOT update hot state or daily PnL."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """INSERT INTO shadow_trades (
+                    symbol, side, source, block_reason,
+                    entry_price, exit_price, stop_price, target_price,
+                    size_usd, entry_ts, exit_ts, hold_candles,
+                    exit_reason, pnl_usd, net_pnl_usd, slippage_usd,
+                    entry_fee_usd, exit_fee_usd, funding_usd,
+                    sigma_at_entry, adx_at_entry, trend_direction_at_entry
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?
+                )""",
+                (
+                    st.symbol, st.side, "live", st.block_reason,
+                    st.entry_price, st.exit_price, st.stop_price,
+                    st.target_price, st.size_usd, st.entry_ts, st.exit_ts,
+                    st.hold_candles, st.exit_reason, st.pnl_usd,
+                    st.net_pnl_usd, st.slippage_usd, st.entry_fee_usd,
+                    st.exit_fee_usd, st.funding_usd, st.sigma_at_entry,
+                    st.adx_at_entry, st.trend_direction_at_entry,
+                ),
+            )
+            self._conn.commit()
+            return cursor.lastrowid
 
     def get_trades(
         self,

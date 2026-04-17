@@ -294,3 +294,71 @@ class TestGenerateSignal:
             vwap_window=96,
         )
         assert sig.signal == "short_entry"
+
+    def test_long_allowed_when_downtrend_low_adx(self):
+        """Long entry allowed when trend=down but ADX below counter-trend minimum."""
+        n = 100
+        c = flat_candles(50000, n)
+        c["closes"][-1] = 48000
+        c["highs"][-1] = 48100
+        c["lows"][-1] = 47900
+        # Nudge trend candles down → trend_direction="down", ADX ~31
+        trend = flat_candles(50000, n)
+        for i in range(n - 5, n):
+            trend["closes"][i] = 49800
+            trend["highs"][i] = 49900
+            trend["lows"][i] = 49700
+        sig = generate_signal(
+            closes=c["closes"], highs=c["highs"],
+            lows=c["lows"], volumes=c["volumes"],
+            trend_closes=trend["closes"], trend_highs=trend["highs"],
+            trend_lows=trend["lows"], current_position_side=None,
+            vwap_window=96, adx_threshold=99.0,
+            counter_trend_min_adx=35.0,  # above computed ADX (~31)
+        )
+        assert sig.signal == "long_entry"
+
+    def test_long_blocked_when_downtrend_high_adx(self):
+        """Long entry blocked when trend=down and ADX above counter-trend minimum."""
+        n = 100
+        c = flat_candles(50000, n)
+        c["closes"][-1] = 48000
+        c["highs"][-1] = 48100
+        c["lows"][-1] = 47900
+        trend = flat_candles(50000, n)
+        for i in range(n - 5, n):
+            trend["closes"][i] = 49800
+            trend["highs"][i] = 49900
+            trend["lows"][i] = 49700
+        sig = generate_signal(
+            closes=c["closes"], highs=c["highs"],
+            lows=c["lows"], volumes=c["volumes"],
+            trend_closes=trend["closes"], trend_highs=trend["highs"],
+            trend_lows=trend["lows"], current_position_side=None,
+            vwap_window=96, adx_threshold=99.0,
+            counter_trend_min_adx=20.0,  # below computed ADX (~31)
+        )
+        assert sig.signal == "none"
+        assert "counter_trend" in sig.block_reason
+
+    def test_short_allowed_when_uptrend_low_adx(self):
+        """Short entry allowed when trend=up but ADX below counter-trend minimum."""
+        n = 100
+        c = flat_candles(50000, n)
+        c["closes"][-1] = 52000
+        c["highs"][-1] = 52100
+        c["lows"][-1] = 51900
+        trend = flat_candles(50000, n)
+        for i in range(n - 5, n):
+            trend["closes"][i] = 50200
+            trend["highs"][i] = 50300
+            trend["lows"][i] = 50100
+        sig = generate_signal(
+            closes=c["closes"], highs=c["highs"],
+            lows=c["lows"], volumes=c["volumes"],
+            trend_closes=trend["closes"], trend_highs=trend["highs"],
+            trend_lows=trend["lows"], current_position_side=None,
+            vwap_window=96, adx_threshold=99.0,
+            counter_trend_min_adx=35.0,  # above computed ADX (~31)
+        )
+        assert sig.signal == "short_entry"

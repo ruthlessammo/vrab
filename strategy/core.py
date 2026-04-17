@@ -51,6 +51,7 @@ class TradingParams:
     max_daily_loss_multiplier: int
     max_hold_candles: int
     hourly_funding_rate: float
+    counter_trend_min_adx: float = 0.0
     entry_expiry_candles: int = 2
     # Signal mode
     signal_mode: str = "vwap"  # "vwap" | "ema_cross"
@@ -105,7 +106,8 @@ def build_params_from_config() -> TradingParams:
     """Build TradingParams from config.py — the ONE place that reads config."""
     from config import (
         VWAP_WINDOW, VWAP_ENTRY_SIGMA, VWAP_EXIT_SIGMA, VWAP_STOP_SIGMA,
-        TREND_EMA_PERIOD, ADX_PERIOD, ADX_THRESHOLD, FUNDING_RATE_BLOCK,
+        TREND_EMA_PERIOD, ADX_PERIOD, ADX_THRESHOLD, COUNTER_TREND_MIN_ADX,
+        FUNDING_RATE_BLOCK,
         RISK_PER_TRADE, TARGET_LEVERAGE, MAX_LEVERAGE, MIN_LIQUIDATION_BUFFER,
         MARGIN_UTILISATION_CAP, HL_MAINTENANCE_MARGIN, MAKER_REBATE_RATE,
         TAKER_FEE_RATE, TICK_SIZE, SLIPPAGE_TICKS_ENTRY, SLIPPAGE_TICKS_STOP,
@@ -139,6 +141,7 @@ def build_params_from_config() -> TradingParams:
         max_hold_candles=max_hold_candles,
         hourly_funding_rate=BACKTEST_HOURLY_FUNDING_RATE,
         entry_expiry_candles=ENTRY_EXPIRY_CANDLES,
+        counter_trend_min_adx=COUNTER_TREND_MIN_ADX,
     )
 
 
@@ -206,6 +209,7 @@ def evaluate_entry(
             ema_period=params.ema_period, adx_period=params.adx_period,
             adx_threshold=params.adx_threshold, funding_rate=funding_rate,
             funding_block_threshold=params.funding_block_threshold,
+            counter_trend_min_adx=params.counter_trend_min_adx,
         )
 
     # Exit signals pass through

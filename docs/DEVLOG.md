@@ -144,3 +144,49 @@
 
 ### Tests Added
 - `tests/test_mid_candle_exit.py` — 14 tests (infer_exit, extract_exit_price)
+
+## 2026-04-17 — Sprint 4: Missed Trade Investigation & Observability
+
+### Problem
+Missed a textbook mean-reversion entry at 01:25 UTC — σ=-2.60, ADX=10.9 (range-bound), but `counter_trend_long` blocked the long because 15m EMA said "down". At ADX=10.9 trend direction is noise, not signal. Price bounced immediately. Had to manually query SQLite to discover this — no real-time visibility into blocked trades.
+
+### Root Cause
+Counter-trend filter applied unconditionally regardless of ADX level. In low-ADX regimes, the EMA trend direction is meaningless but still blocked valid mean-reversion setups.
+
+### New Features
+
+**1. Telegram alerts for blocked trades**
+- `notifications/telegram.py` — `format_blocked_signal()` shows side, block reason, price, VWAP, σ bar, ADX, trend
+- `live/engine.py` — fires alert in `_process_entry()` whenever an entry signal is generated but blocked
+- Immediate visibility — no more DB archaeology to find missed trades
+
+**2. Counter-trend ADX minimum gate**
+- `config.py` — `COUNTER_TREND_MIN_ADX = 20.0`
+- `strategy/signals.py` — counter-trend filter now requires `regime.adx >= counter_trend_min_adx`
+- Below ADX 20, trend direction is noise → entries allowed regardless of EMA direction
+- Threaded through `TradingParams`, `evaluate_entry()`, backtest engine, sweep
+- Default 0.0 in `TradingParams` preserves backward compat for existing tests
+
+**3. Shadow book (hypothetical PnL for blocked trades)**
+- `strategy/shadow.py` — `ShadowBook` class tracks blocked entries as shadow positions
+- Uses same `evaluate_exit()` and `calc_round_trip_cost()` as real trades (zero divergence)
+- Exits via stop/target/timeout only (no signal exit — can't know hypothetical signal state)
+- `data/store.py` — separate `shadow_trades` table, isolated from real PnL/hot state
+- `live/engine.py` — integrated into candle loop (`on_candle`) and day rollover (`clear`)
+- `config.py` — `SHADOW_BOOK_ENABLED = True`
+- Max 20 concurrent shadow positions, in-memory only (not persisted across restarts)
+
+### Decisions
+- **Separate `shadow_trades` table** (not `source="shadow"` in trades) — prevents accidental aggregation into real PnL, dashboard metrics, or Gate 0 validation
+- **ADX minimum default 0.0 in TradingParams** — existing tests pass without modification, config sets the real value (20.0)
+- **No signal-exit for shadows** — shadow positions skip signal exits because we can't replay `generate_signal` for a hypothetical position side without running the full signal pipeline
+
+### Config Changes
+- `COUNTER_TREND_MIN_ADX = 20.0`
+- `SHADOW_BOOK_ENABLED = True`
+
+### Tests Added
+- `tests/test_signals.py` — 3 tests (ADX gate: low ADX allows entry, high ADX blocks, both sides)
+- `tests/test_shadow.py` — 10 tests (creation, stop/target/timeout exits, hold, multiple positions, context preservation, clear, cap)
+- `tests/test_store.py` — 1 test (shadow trade DB isolation)
+- Total: 134 tests passing (was 120)

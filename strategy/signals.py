@@ -237,6 +237,7 @@ def generate_signal(
     adx_threshold: float = 25.0,
     funding_rate: float = 0.0,
     funding_block_threshold: float = 0.0003,
+    counter_trend_min_adx: float = 0.0,
 ) -> SignalResult:
     """Generate trading signal from candle data.
 
@@ -295,7 +296,7 @@ def generate_signal(
 
     # 8-9. Long entry
     if sigma <= -entry_sigma:
-        if regime.trend_direction == "down":
+        if regime.trend_direction == "down" and regime.adx >= counter_trend_min_adx:
             return _result(
                 "none", sigma=sigma, vwap_st=vwap_state, regime=regime,
                 block="counter_trend_long",
@@ -313,7 +314,7 @@ def generate_signal(
 
     # 10-11. Short entry
     if sigma >= entry_sigma:
-        if regime.trend_direction == "up":
+        if regime.trend_direction == "up" and regime.adx >= counter_trend_min_adx:
             return _result(
                 "none", sigma=sigma, vwap_st=vwap_state, regime=regime,
                 block="counter_trend_short",

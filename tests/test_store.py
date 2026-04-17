@@ -226,3 +226,31 @@ class TestStore:
 
         assert len(errors) == 0
         s.close()
+
+    def test_record_shadow_trade(self):
+        """Shadow trades write to separate table, not hot state."""
+        from strategy.shadow import ShadowTrade
+        s = Store(":memory:")
+        st = ShadowTrade(
+            symbol="BTC", side="long", block_reason="counter_trend_long",
+            entry_price=75000.0, exit_price=74000.0,
+            stop_price=74000.0, target_price=76000.0,
+            size_usd=100.0, entry_ts=1000, exit_ts=2000,
+            hold_candles=5, exit_reason="stop",
+            pnl_usd=-1.33, net_pnl_usd=-1.50,
+            slippage_usd=-0.10, entry_fee_usd=0.02,
+            exit_fee_usd=-0.04, funding_usd=-0.05,
+        )
+        row_id = s.record_shadow_trade(st)
+        assert row_id >= 1
+
+        # Verify it's in shadow_trades, not trades
+        row = s._conn.execute(
+            "SELECT * FROM shadow_trades WHERE id=?", (row_id,)
+        ).fetchone()
+        assert row is not None
+
+        # Verify trades table not touched
+        trade_count = s._conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+        assert trade_count == 0
+        s.close()
