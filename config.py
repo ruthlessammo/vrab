@@ -51,6 +51,7 @@ TREND_EMA_PERIOD = 15
 ADX_PERIOD = 14
 ADX_THRESHOLD = 35.0            # sweep: 35 (was 30, allows mildly trending setups)
 COUNTER_TREND_MIN_ADX = 20.0    # only apply counter-trend filter when ADX >= this
+GRADUATION_CUTOVER_TS = 1776455700000  # 2026-04-17 19:55 UTC — filter changes deployed
 
 # ---------------------------------------------------------------------------
 # Risk

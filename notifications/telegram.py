@@ -175,7 +175,7 @@ def format_trades_list(trades: list) -> str:
     return "\n".join(lines)
 
 
-def format_graduation(trades: list, daily_records: list, equity: float, peak_equity: float, cb_trips: int) -> str:
+def format_graduation(trades: list, daily_records: list, equity: float, peak_equity: float, cb_trips: int, since_date: str | None = None) -> str:
     """Format /graduation response showing progress toward capital scaling."""
     import math
 
@@ -249,6 +249,8 @@ def format_graduation(trades: list, daily_records: list, equity: float, peak_equ
         f"",
         f"*Tier*: {tier}",
     ]
+    if since_date:
+        lines.append(f"Since: `{since_date}`")
     return "\n".join(lines)
 
 

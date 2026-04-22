@@ -256,12 +256,20 @@ class TelegramBot:
 
     async def _cmd_graduation(self) -> str:
         """Handle /graduation command — show scaling progress."""
+        from config import GRADUATION_CUTOVER_TS
         source = self._status.mode
         all_trades = self._store.get_trades(limit=10000)
         live_trades = [t for t in all_trades if t.source == source]
         daily_records = self._store.get_daily_pnl(days=90)
+        since_date = None
+        if GRADUATION_CUTOVER_TS > 0:
+            live_trades = [t for t in live_trades if t.entry_ts >= GRADUATION_CUTOVER_TS]
+            since_date = datetime.fromtimestamp(
+                GRADUATION_CUTOVER_TS / 1000, tz=timezone.utc
+            ).strftime("%Y-%m-%d")
+            daily_records = [r for r in daily_records if r["date"] >= since_date]
         equity = self._status.equity
         peak_equity = float(self._store.get_meta("peak_equity") or str(equity))
         cb_active = self._store.get_meta("circuit_breaker") == "1"
         cb_trips = 1 if cb_active else 0
-        return format_graduation(live_trades, daily_records, equity, peak_equity, cb_trips)
+        return format_graduation(live_trades, daily_records, equity, peak_equity, cb_trips, since_date=since_date)
