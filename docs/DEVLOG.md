@@ -256,3 +256,40 @@ Key finding: **gross PnL is positive** (+$597 at 1.5%) — signal alpha is real,
 - `config.py` — `GATE0_MIN_SHARPE = 1.0`, `GATE0_MAX_DD = 0.20`, removed `GATE0_MAX_HALTS`
 - `backtest/engine.py` — removed halt count from Gate 0 validation (kept in output as monitoring metric)
 - 365-day backtest: **Gate 0 PASS** at 1.5% risk
+
+## 2026-04-22 — Regime Filtering Investigation
+
+### Question
+12×30d walk-forward showed 3 bleed months (Feb, Oct, May) with 17-21% win rate dragging performance. Can we detect bad regimes in advance and skip them?
+
+### 12×30d Walk-Forward Results
+
+| Window | Period | PnL | Sharpe | WR | DD |
+|--------|--------|-----|--------|----|----|
+| 12 | Apr–May 25 | +$70 | 1.75 | 41% | 9.1% |
+| 11 | May–Jun 25 | -$42 | -4.10 | 20% | 16.9% |
+| 10 | Jun–Jul 25 | +$104 | 4.26 | 40% | 3.0% |
+| 9 | Jul–Aug 25 | +$35 | -0.02 | 34% | 6.8% |
+| 8 | Aug–Sep 25 | +$0.4 | -1.79 | 29% | 7.2% |
+| 7 | Sep–Oct 25 | +$26 | -1.03 | 30% | 12.5% |
+| 6 | Oct–Nov 25 | -$41 | -4.73 | 21% | 10.1% |
+| 5 | Nov–Dec 25 | +$161 | 6.42 | 57% | 3.9% |
+| 4 | Dec–Jan 26 | +$69 | 1.76 | 36% | 3.4% |
+| 3 | Jan–Feb 26 | +$109 | 3.68 | 46% | 6.5% |
+| 2 | Feb–Mar 26 | -$35 | -3.31 | 17% | 11.6% |
+| 1 | Mar–Apr 26 | +$21 | -0.41 | 33% | 9.9% |
+
+### Method
+Built `backtest/regime_analysis.py` — standalone research script that annotates every backtest trade with backward-looking regime metrics at entry time, then splits into quintiles to test predictive power.
+
+### Metrics Tested
+1. **24h directional move** — abs % change over 288 candles
+2. **24h realized volatility** — annualized from 5m log-returns
+3. **24h high-low range / close** — total range vs price
+4. **VWAP bandwidth** — volume-weighted std / vwap
+
+### Results
+All four metrics: **Spearman ρ ≈ 0** (no predictive signal). No monotonic relationship between any metric and trade PnL. Highest-volatility quintile actually had the *best* performance — mean-reversion needs big swings.
+
+### Conclusion
+**No regime filter added.** The bleed months aren't caused by measurable market conditions we can detect in advance. Drawdowns are the cost of running leveraged mean-reversion on BTC. The strategy produces +$1,340/year including those months — accept the rough with the smooth.
