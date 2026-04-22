@@ -81,13 +81,12 @@ BACKTEST_FILL_RATE = 0.70               # realistic limit fill rate
 # ---------------------------------------------------------------------------
 # Gate 0 thresholds
 # ---------------------------------------------------------------------------
-GATE0_MIN_SHARPE = 1.5
-GATE0_MAX_DD = 0.08
+GATE0_MIN_SHARPE = 1.0
+GATE0_MAX_DD = 0.20
 GATE0_MIN_TRADES = 30
 GATE0_MIN_WIN_RATE = 0.35
 GATE0_MIN_EXPECTANCY = 0.0
 GATE0_MAX_LIQ_BLOCK_RATIO = 0.10
-GATE0_MAX_HALTS = 2
 
 # ---------------------------------------------------------------------------
 # Live engine

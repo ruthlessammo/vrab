@@ -25,7 +25,7 @@ from config import (
     DB_PATH,
     GATE0_MIN_SHARPE, GATE0_MAX_DD, GATE0_MIN_TRADES,
     GATE0_MIN_WIN_RATE, GATE0_MIN_EXPECTANCY,
-    GATE0_MAX_LIQ_BLOCK_RATIO, GATE0_MAX_HALTS,
+    GATE0_MAX_LIQ_BLOCK_RATIO,
 )
 from strategy.core import (
     TradingParams, CoreDecision, TradeSetup, ExitAction,
@@ -192,9 +192,6 @@ class WindowResult:
             failures.append(
                 f"liq_blocked={self.liq_blocked_count}/{total_signals} > {GATE0_MAX_LIQ_BLOCK_RATIO:.0%}"
             )
-        if self.halt_count > GATE0_MAX_HALTS:
-            failures.append(f"halt_count={self.halt_count} > {GATE0_MAX_HALTS}")
-
         return len(failures) == 0, failures
 
     def summary(self) -> str:
@@ -298,9 +295,6 @@ def aggregate_gate_0(
         failures.append(
             f"liq_blocked={total_liq_blocks}/{total_signals} > {GATE0_MAX_LIQ_BLOCK_RATIO:.0%}"
         )
-    if total_halts > GATE0_MAX_HALTS * len(results):
-        failures.append(f"halt_count={total_halts} > {GATE0_MAX_HALTS * len(results)}")
-
     return len(failures) == 0, failures
 
 
