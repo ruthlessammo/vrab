@@ -257,6 +257,33 @@ Key finding: **gross PnL is positive** (+$597 at 1.5%) — signal alpha is real,
 - `backtest/engine.py` — removed halt count from Gate 0 validation (kept in output as monitoring metric)
 - 365-day backtest: **Gate 0 PASS** at 1.5% risk
 
+## 2026-04-22 — Parity Audit: Live/Backtest Data-Slicing Fix
+
+### Motivation
+ETH Desk (other strategy) had a look-ahead bias where backtest and live computed features differently for the same timestamp. Both had passing unit tests — neither caught the bug because they were never forced to produce identical outputs. Before VRAB accumulates more live trades for graduation, audited for the same bug class.
+
+### Findings
+VRAB's shared-core architecture (`strategy/core.py` + `strategy/signals.py`) is strong — no separate implementations. Both engines call the same pure functions. However, the **data-slicing layer** in `live/engine.py` had two parity issues:
+
+1. **VWAP window shifted +1 bar** — the candle feed upserts bar T+1 to the store before firing the candle-close event. The live engine read from the store without filtering, so the VWAP window included bar T+1's first tick (negligible volume) and dropped the oldest bar vs the backtest's correct `[T-35, ..., T]` window.
+
+2. **Trend boundary shifted +5 min** — the live engine used `event["candle"].ts` (bar T+1's timestamp) instead of the closed bar's timestamp for the 15m trend boundary. Occasionally included one extra 15m candle in the regime filter that the backtest excluded.
+
+3. **Exit evaluation used wrong OHLC** — bar T+1's first tick (high ≈ low ≈ open) instead of the closed bar's full range, making the candle-close exit check nearly useless.
+
+**Root cause**: `_on_candle_close` used `event["candle"]` (bar T+1) instead of `event["closed_candle"]` (bar T) for all decision data.
+
+**Not look-ahead**: The backtest was the conservative side — it used less data. The bugs affected the live engine only, causing slightly different (not better) signals.
+
+### Fix
+- `live/engine.py` — use `event["closed_candle"]` for all trading logic, filter `primary_candles` to `ts <= candle_ts`, use closed candle OHLC for exits and shadow book. `new_candle.close` only used for paper mode mid-price.
+
+### Tests
+- `tests/test_vrab_parity.py` — 4 tests: VWAP window match, trend window match, signal output parity (within 1e-9), and proof that pre-fix code diverged. 138 total tests passing.
+
+### Audit Report
+- `research/outputs/vrab_parity_audit.md` — full 6-section report covering architecture map, timestamp audit, parity test results, fill price audit, regime filter deep-dive, and findings.
+
 ## 2026-04-22 — Regime Filtering Investigation
 
 ### Question

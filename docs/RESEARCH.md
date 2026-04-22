@@ -83,6 +83,30 @@ Costs: slippage=-$2.01, entry_fee=+$91.60, exit_fee=-$73.95, funding=+$1.08, reb
 - Stop hit on first trade due to unrounded price bug (not strategy failure)
 - Target fills happening mid-candle as expected — 5m candle boundary is detection, not execution
 
+## Parity Audit (2026-04-22)
+
+### Question
+Does VRAB have look-ahead bias or live/backtest divergence in feature computation?
+
+### Method
+Walked the full signal computation path for both engines. Traced data slicing at each step: VWAP window, sigma distance, regime filter (ADX/EMA), entry/stop/target prices, exit evaluation. Compared what each engine feeds to the shared `generate_signal()` function at the same decision moment.
+
+### Findings
+
+**Architecture**: Single shared-core — both engines call the same pure functions from `strategy/signals.py` and `strategy/core.py`. No separate implementations. This eliminates the bug class where two pipelines drift.
+
+**Data-slicing bugs found** (in live engine only):
+- VWAP window included bar T+1's first tick (shifted +1 bar vs backtest)
+- Trend boundary shifted +5 min (used T+1's timestamp)
+- Exit evaluation used T+1's first tick OHLC instead of closed bar's full range
+
+**No look-ahead in backtest**: The backtest was more conservative (used less data). These bugs only affected the live engine.
+
+**Fill prices**: Backtest applies +$1 entry slippage, +$3 stop slippage, 30% maker miss rate, and funding costs. Live uses maker limit orders (fill at price or better). Backtest cost model is conservative or realistic. No fill-price look-ahead.
+
+### Conclusion
+Fixed live engine data slicing. Added parity regression test (4 tests, confirms match within 1e-9). Full report at `research/outputs/vrab_parity_audit.md`.
+
 ## Future Research Ideas
 - [ ] Historical funding rate integration (replace static 0.01%/hr assumption)
 - [ ] Multi-timeframe VWAP confluence (1h + 4h)
