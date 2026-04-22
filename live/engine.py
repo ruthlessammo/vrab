@@ -157,6 +157,7 @@ class LiveEngine:
         self._signals_blocked_today: int = 0
         self._daily_max_dd: float = 0.0
         self._daily_start_equity: float = 0.0
+        self._shadow_completions_today: list = []
 
         # Entry expiry
         self._pending_signal_dir: str | None = None
@@ -849,6 +850,7 @@ class LiveEngine:
             )
             for st in completed:
                 self._store.record_shadow_trade(st)
+                self._shadow_completions_today.append(st)
 
     def _persist_daily_pnl(self, end_equity: float) -> None:
         """Update daily PnL table with current metrics."""
@@ -879,6 +881,7 @@ class LiveEngine:
                     equity=prev_equity,
                     signals_generated=self._signals_today,
                     signals_blocked=self._signals_blocked_today,
+                    shadow_trades=self._shadow_completions_today,
                 )
                 await send_alert(summary)
 
@@ -889,6 +892,7 @@ class LiveEngine:
         self._signals_today = 0
         self._signals_blocked_today = 0
         self._daily_max_dd = 0.0
+        self._shadow_completions_today = []
         if self._shadow_book:
             self._shadow_book.clear()
         self._daily_start_equity = await self._get_equity()

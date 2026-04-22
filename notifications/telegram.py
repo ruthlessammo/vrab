@@ -282,12 +282,19 @@ def format_daily_summary(
     equity: float,
     signals_generated: int,
     signals_blocked: int,
+    shadow_trades: list | None = None,
 ) -> str:
     """Format end-of-day auto-summary."""
-    return (
-        f"*Daily Summary — {date}*\n"
-        f"PnL: `{pnl:+.2f}` USD\n"
-        f"Trades: `{trade_count}`\n"
-        f"Equity: `${equity:.2f}`\n"
-        f"Signals: `{signals_generated}` generated, `{signals_blocked}` blocked"
-    )
+    lines = [
+        f"*Daily Summary — {date}*",
+        f"PnL: `{pnl:+.2f}` USD",
+        f"Trades: `{trade_count}`",
+        f"Equity: `${equity:.2f}`",
+        f"Signals: `{signals_generated}` generated, `{signals_blocked}` blocked",
+    ]
+    if shadow_trades:
+        wins = sum(1 for t in shadow_trades if t.net_pnl_usd > 0)
+        losses = len(shadow_trades) - wins
+        avg = sum(t.net_pnl_usd for t in shadow_trades) / len(shadow_trades)
+        lines.append(f"Shadow: `{len(shadow_trades)}` blocked, avg `{avg:+.2f}` ({wins}W/{losses}L)")
+    return "\n".join(lines)
