@@ -199,3 +199,17 @@ Counter-trend filter applied unconditionally regardless of ADX level. In low-ADX
 
 ### Bug Fixes
 - Kill switch used file-based path (`/tmp/VRAB_KILL`) but `_halted_today` was also set and persisted to DB — removing the file wasn't enough to resume. `/resume` now clears all halt states
+
+## 2026-04-22 — Graduation Cutover
+
+### Problem
+21 live trades included a chunk from before the counter-trend filter and ADX gate existed. Those early unfiltered losses dragged expectancy to -$0.25 and total PnL to -$5.18, polluting graduation metrics with a strategy that no longer exists. Underlying performance (Sharpe 2.57, max DD 0.8%) was strong — but Gate 2 couldn't pass on mixed data.
+
+### Solution
+Added `GRADUATION_CUTOVER_TS` in config — graduation metrics now only count trades and daily records after 2026-04-17 19:55 UTC (when filter changes deployed). All historical data preserved in DB for analysis; only `/graduation` applies the filter.
+
+### Changes
+- `config.py` — `GRADUATION_CUTOVER_TS = 1776455700000` (2026-04-17 19:55 UTC)
+- `notifications/bot.py` — `_cmd_graduation()` filters trades by `entry_ts >= cutover` and daily records by `date >= cutover_date`
+- `notifications/telegram.py` — `format_graduation()` shows `Since: YYYY-MM-DD` when cutover active
+- 3 files, ~10 lines added. No schema changes, no test changes.
