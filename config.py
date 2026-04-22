@@ -57,7 +57,7 @@ GRADUATION_CUTOVER_TS = 1776455700000  # 2026-04-17 19:55 UTC — filter changes
 # Risk
 # ---------------------------------------------------------------------------
 MAX_DAILY_LOSS_MULTIPLIER = 3   # halt after 3× single-trade risk loss in a day
-MAX_DRAWDOWN_PCT = 0.10         # 10% from peak equity → circuit breaker
+MAX_DRAWDOWN_PCT = 0.20         # 20% from peak equity → circuit breaker
 MAX_POSITION_HOLD_MINS = 240
 MAX_OPEN_POSITIONS = 1
 NEWS_BUFFER_MINS = 5
