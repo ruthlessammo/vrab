@@ -190,3 +190,12 @@ Counter-trend filter applied unconditionally regardless of ADX level. In low-ADX
 - `tests/test_shadow.py` — 10 tests (creation, stop/target/timeout exits, hold, multiple positions, context preservation, clear, cap)
 - `tests/test_store.py` — 1 test (shadow trade DB isolation)
 - Total: 134 tests passing (was 120)
+
+**4. Telegram /pause and /resume commands**
+- `notifications/bot.py` — `/pause` stops new entries, `/resume` re-enables them
+- Separate `_paused` flag in engine — persists across day rollover (unlike `_halted_today`)
+- `/resume` clears both `_paused` and `_halted_today` — one command to unblock trading regardless of cause
+- Open positions still monitored for exits while paused
+
+### Bug Fixes
+- Kill switch used file-based path (`/tmp/VRAB_KILL`) but `_halted_today` was also set and persisted to DB — removing the file wasn't enough to resume. `/resume` now clears all halt states
