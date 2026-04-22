@@ -213,3 +213,16 @@ Added `GRADUATION_CUTOVER_TS` in config — graduation metrics now only count tr
 - `notifications/bot.py` — `_cmd_graduation()` filters trades by `entry_ts >= cutover` and daily records by `date >= cutover_date`
 - `notifications/telegram.py` — `format_graduation()` shows `Since: YYYY-MM-DD` when cutover active
 - 3 files, ~10 lines added. No schema changes, no test changes.
+
+## 2026-04-22 — Shadow Stats in Daily Summary
+
+### Problem
+Shadow book tracked hypothetical PnL of blocked trades but results were only visible via manual SQLite queries. No daily visibility into whether filters were helping or costing money.
+
+### Solution
+Added shadow trade stats to the end-of-day Telegram summary. When shadow trades complete during a day, the summary shows count, average PnL, and win/loss breakdown.
+
+### Changes
+- `live/engine.py` — `_shadow_completions_today` list accumulates completed shadow trades, passed to `format_daily_summary()`, cleared in `_finalize_day()`
+- `notifications/telegram.py` — `format_daily_summary()` accepts optional `shadow_trades` param, appends `Shadow: N blocked, avg +$X.XX (WW/LL)` when present
+- 2 files, ~15 lines. Omitted when no shadow trades that day (clean output).
