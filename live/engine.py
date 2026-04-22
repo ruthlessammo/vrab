@@ -659,8 +659,16 @@ class LiveEngine:
 
     async def _on_candle_close(self, event: dict) -> None:
         """Process a closed 5m candle — the core trading loop."""
-        candle: Candle = event["candle"]
-        candle_ts = candle.ts
+        new_candle: Candle = event["candle"]           # bar T+1 (first tick of new bar)
+        closed_candle: Candle | None = event.get("closed_candle")  # bar T (just-closed)
+        # Use the closed bar's timestamp for all trading decisions (parity with backtest).
+        # The new candle is only used for latest mid-price in paper mode.
+        if closed_candle:
+            candle_ts = closed_candle.ts
+        else:
+            # Fallback: approximate T from T+1 (should not happen in normal operation)
+            candle_ts = new_candle.ts - 300_000
+            closed_candle = new_candle
         candle_day = datetime.fromtimestamp(candle_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
         self._candle_count += 1
@@ -749,7 +757,10 @@ class LiveEngine:
             await self._sanity_check()
 
         # --- Prepare candle data ---
-        primary_candles = self._store.get_candles(SYMBOL, CANDLE_TF, limit=200)
+        # Exclude bar T+1 (already upserted by feed) so the window matches
+        # the backtest: [T-vwap_win+1, ..., T] using only fully closed bars.
+        all_primary = self._store.get_candles(SYMBOL, CANDLE_TF, limit=200)
+        primary_candles = [c for c in all_primary if c.ts <= candle_ts]
         trend_candles = self._store.get_candles(SYMBOL, TREND_TF, limit=200)
 
         if len(primary_candles) < self._params.vwap_window + 5:
@@ -762,7 +773,7 @@ class LiveEngine:
         lows = [c.low for c in primary_candles[-vwap_win:]]
         volumes = [c.volume for c in primary_candles[-vwap_win:]]
 
-        # 15m trend alignment — same as backtest
+        # 15m trend alignment — same as backtest (uses closed bar's ts, not T+1's)
         trend_boundary = candle_ts - 900_000
         trend_ts_arr = [c.ts for c in trend_candles]
         trend_idx = bisect.bisect_right(trend_ts_arr, trend_boundary)
@@ -773,10 +784,9 @@ class LiveEngine:
 
         # --- Belt-and-suspenders: check paper fills at candle close using closed candle's full range ---
         if PAPER_MODE:
-            closed = event.get("closed_candle")
-            check_high = closed.high if closed else candle.high
-            check_low = closed.low if closed else candle.low
-            self._client.set_mid_price(candle.close)
+            check_high = closed_candle.high
+            check_low = closed_candle.low
+            self._client.set_mid_price(new_candle.close)
             filled = self._client.check_fills(check_high, check_low)
             for fill in filled:
                 await self._on_paper_fill(fill, candle_ts)
@@ -816,9 +826,9 @@ class LiveEngine:
             self._position.hold_candles += 1
 
             exit_decision = evaluate_exit(
-                candle_high=candle.high,
-                candle_low=candle.low,
-                candle_close=candle.close,
+                candle_high=closed_candle.high,
+                candle_low=closed_candle.low,
+                candle_close=closed_candle.close,
                 position_side=self._position.side,
                 position_entry_price=self._position.entry_price,
                 position_stop_price=self._position.stop_price,
@@ -846,7 +856,7 @@ class LiveEngine:
         # --- Process shadow positions ---
         if self._shadow_book:
             completed = self._shadow_book.on_candle(
-                candle.high, candle.low, candle.close, candle_ts,
+                closed_candle.high, closed_candle.low, closed_candle.close, candle_ts,
             )
             for st in completed:
                 self._store.record_shadow_trade(st)
