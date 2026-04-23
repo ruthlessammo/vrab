@@ -16,7 +16,7 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 
 # Margin (ms) added to each side of the DB trade window when claiming fills
-FILL_MARGIN_MS = 120_000
+FILL_MARGIN_MS = 3_600_000  # 1 hour — wide for legacy trades with candle-aligned timestamps
 
 
 def parse_hl_csv(csv_path: str) -> list[dict]:
@@ -63,6 +63,7 @@ def fetch_fills_from_api(wallet_address: str, start_ts: int,
             "ntl": float(f["px"]) * float(f["sz"]),
             "fee": float(f["fee"]),
             "closedPnl": float(f["closedPnl"]),
+            "oid": f.get("oid"),
         })
     # Sort chronologically — API doesn't guarantee order
     result.sort(key=lambda f: f["time"])
@@ -92,7 +93,10 @@ def reconcile(fills: list[dict], db_trades: list[dict],
               margin_ms: int = FILL_MARGIN_MS) -> dict:
     """DB-anchored reconciliation.
 
-    For each DB trade, find HL fills within its time window and sum closedPnl.
+    For each DB trade:
+    - If entry_oid is set, match fills by oid (exact, ignores time window)
+    - Otherwise, fall back to time-window matching
+
     Returns result dict with totals, per-trade details, orphans, and unmatched.
     """
     # Level 0: totals
@@ -107,18 +111,31 @@ def reconcile(fills: list[dict], db_trades: list[dict],
 
     # DB trades ordered by entry_ts (already sorted from query)
     for db in db_trades:
-        window_start = db["entry_ts"] - margin_ms
-        window_end = db["exit_ts"] + margin_ms
+        # Build set of known order IDs for this trade
+        trade_oids = {v for v in (db.get("entry_oid"), db.get("stop_oid"),
+                                  db.get("target_oid")) if v is not None}
 
         matched_fills = []
-        for i, f in enumerate(fills):
-            if i in claimed:
-                continue
-            if not _coin_matches(f["coin"], db["symbol"]):
-                continue
-            if window_start <= f["time"] <= window_end:
-                matched_fills.append(f)
-                claimed.add(i)
+        if trade_oids:
+            # OID match — find all fills whose order ID matches any trade oid
+            for i, f in enumerate(fills):
+                if i in claimed:
+                    continue
+                if f.get("oid") in trade_oids:
+                    matched_fills.append(f)
+                    claimed.add(i)
+        else:
+            # Time-window fallback for legacy trades (no oid stored)
+            window_start = db["entry_ts"] - margin_ms
+            window_end = db["exit_ts"] + margin_ms
+            for i, f in enumerate(fills):
+                if i in claimed:
+                    continue
+                if not _coin_matches(f["coin"], db["symbol"]):
+                    continue
+                if window_start <= f["time"] <= window_end:
+                    matched_fills.append(f)
+                    claimed.add(i)
 
         hl_pnl = sum(f["closedPnl"] for f in matched_fills)
         db_pnl_ex_funding = db["net_pnl_usd"] - (db["funding_usd"] or 0)

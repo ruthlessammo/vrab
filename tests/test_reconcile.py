@@ -4,9 +4,10 @@ import pytest
 from tools.reconcile_hl import reconcile, format_reconcile_report, format_reconcile_telegram
 
 
-def _fill(time_ms, coin="BTC", closed_pnl=0.0, direction="Close Long"):
+def _fill(time_ms, coin="BTC", closed_pnl=0.0, direction="Close Long",
+          oid=None):
     """Helper to create a fill dict."""
-    return {
+    f = {
         "time": time_ms,
         "coin": coin,
         "dir": direction,
@@ -16,10 +17,14 @@ def _fill(time_ms, coin="BTC", closed_pnl=0.0, direction="Close Long"):
         "fee": 0.0,
         "closedPnl": closed_pnl,
     }
+    if oid is not None:
+        f["oid"] = oid
+    return f
 
 
 def _db_trade(entry_ts, exit_ts, side="long", symbol="BTC",
-              net_pnl_usd=0.0, funding_usd=0.0):
+              net_pnl_usd=0.0, funding_usd=0.0,
+              entry_oid=None, stop_oid=None, target_oid=None):
     """Helper to create a DB trade dict."""
     return {
         "id": 1,
@@ -29,6 +34,9 @@ def _db_trade(entry_ts, exit_ts, side="long", symbol="BTC",
         "symbol": symbol,
         "net_pnl_usd": net_pnl_usd,
         "funding_usd": funding_usd,
+        "entry_oid": entry_oid,
+        "stop_oid": stop_oid,
+        "target_oid": target_oid,
     }
 
 
@@ -129,6 +137,76 @@ class TestReconcile:
         result = reconcile(fills, db_trades)
         assert len(result["orphan_fills"]) == 1
         assert len(result["unmatched_db"]) == 1
+
+
+class TestOidMatching:
+    def test_entry_and_exit_oid_match(self):
+        """Entry fills matched by entry_oid, exit fills by stop_oid."""
+        fills = [
+            _fill(1000_000, closed_pnl=0.0, direction="Open Long", oid=42),
+            _fill(8000_000, closed_pnl=5.0, direction="Close Long", oid=99),
+        ]
+        db_trades = [_db_trade(
+            500_000, 600_000,  # narrow window, fills are far outside
+            net_pnl_usd=5.5, funding_usd=0.5,
+            entry_oid=42, stop_oid=99,
+        )]
+        result = reconcile(fills, db_trades)
+        assert result["per_trade"][0]["fill_count"] == 2
+        assert abs(result["per_trade"][0]["hl_pnl"] - 5.0) < 0.001
+        assert result["orphan_fills"] == []
+
+    def test_target_oid_match(self):
+        """Exit fill matched by target_oid (take-profit hit)."""
+        fills = [
+            _fill(1000_000, closed_pnl=0.0, direction="Open Long", oid=42),
+            _fill(8000_000, closed_pnl=5.0, direction="Close Long", oid=77),
+        ]
+        db_trades = [_db_trade(
+            500_000, 600_000,
+            net_pnl_usd=5.5, funding_usd=0.5,
+            entry_oid=42, target_oid=77,
+        )]
+        result = reconcile(fills, db_trades)
+        assert result["per_trade"][0]["fill_count"] == 2
+
+    def test_fallback_to_time_window_when_no_oid(self):
+        """DB trade without any oids falls back to time-window matching."""
+        fills = [_fill(1000_000, closed_pnl=5.0)]
+        db_trades = [_db_trade(
+            999_000, 1001_000,
+            net_pnl_usd=5.5, funding_usd=0.5,
+        )]
+        result = reconcile(fills, db_trades)
+        assert result["per_trade"][0]["fill_count"] == 1
+
+    def test_oid_no_false_match(self):
+        """Fills with different oid are not matched even if in time window."""
+        fills = [_fill(1000_000, closed_pnl=5.0, oid=99)]
+        db_trades = [_db_trade(
+            999_000, 1001_000,
+            net_pnl_usd=5.5, funding_usd=0.5, entry_oid=42,
+        )]
+        result = reconcile(fills, db_trades)
+        assert result["per_trade"][0]["fill_count"] == 0
+        assert len(result["orphan_fills"]) == 1
+
+    def test_mixed_oid_and_legacy(self):
+        """Mix of OID-matched and time-window-matched trades."""
+        fills = [
+            _fill(1000_000, closed_pnl=0.0, direction="Open Long", oid=42),
+            _fill(1500_000, closed_pnl=5.0, direction="Close Long", oid=99),
+            _fill(2000_000, closed_pnl=-2.0),  # no oid, legacy
+        ]
+        db_trades = [
+            _db_trade(500_000, 600_000, net_pnl_usd=5.5, funding_usd=0.5,
+                      entry_oid=42, stop_oid=99),
+            _db_trade(1999_000, 2001_000, net_pnl_usd=-1.5, funding_usd=0.5),
+        ]
+        result = reconcile(fills, db_trades)
+        assert result["per_trade"][0]["fill_count"] == 2  # oid match
+        assert result["per_trade"][1]["fill_count"] == 1  # time window
+        assert result["orphan_fills"] == []
 
 
 class TestFormatReport:

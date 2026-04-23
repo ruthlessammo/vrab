@@ -1247,6 +1247,9 @@ class LiveEngine:
             stop_price=pos.stop_price,
             target_price=pos.target_price,
             source=SOURCE,
+            entry_oid=pos.entry_oid,
+            stop_oid=pos.stop_oid,
+            target_oid=pos.target_oid,
             **pnl_result,
             **pos.signal_context,
         )

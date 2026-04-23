@@ -86,6 +86,9 @@ class Trade:
     net_pnl_usd: float = 0.0
     source: str = "backtest"
     window_idx: int | None = None
+    entry_oid: int | None = None
+    stop_oid: int | None = None
+    target_oid: int | None = None
 
     @property
     def net_pnl(self) -> float:
@@ -180,6 +183,9 @@ class Store:
                     vwap_std_dev_at_entry REAL,
                     volume_at_entry REAL,
                     window_idx INTEGER,
+                    entry_oid INTEGER,
+                    stop_oid INTEGER,
+                    target_oid INTEGER,
                     created_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts
@@ -264,6 +270,13 @@ class Store:
                     value TEXT NOT NULL
                 );
             """)
+            # Migrations: add oid columns to existing DBs
+            for col in ("entry_oid", "stop_oid", "target_oid"):
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE trades ADD COLUMN {col} INTEGER")
+                except Exception:
+                    pass  # column already exists
             self._conn.commit()
 
     def upsert_candles(self, candles: list[Candle]) -> int:
@@ -350,11 +363,12 @@ class Store:
                     net_pnl_usd, equity_return_pct,
                     adx_at_entry, ema_at_entry, trend_direction_at_entry,
                     regime_trending_at_entry, vwap_std_dev_at_entry,
-                    volume_at_entry, window_idx
+                    volume_at_entry, window_idx,
+                    entry_oid, stop_oid, target_oid
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?
                 )""",
                 (
                     trade.symbol, trade.side, trade.source,
@@ -375,6 +389,7 @@ class Store:
                     trade.regime_trending_at_entry,
                     trade.vwap_std_dev_at_entry, trade.volume_at_entry,
                     trade.window_idx,
+                    trade.entry_oid, trade.stop_oid, trade.target_oid,
                 ),
             )
             self._conn.commit()
