@@ -320,3 +320,29 @@ All four metrics: **Spearman ρ ≈ 0** (no predictive signal). No monotonic rel
 
 ### Conclusion
 **No regime filter added.** The bleed months aren't caused by measurable market conditions we can detect in advance. Drawdowns are the cost of running leveraged mean-reversion on BTC. The strategy produces +$1,340/year including those months — accept the rough with the smooth.
+
+## 2026-04-23 — Reconciliation Rewrite + PnL Source of Truth
+
+### Problem
+The old reconcile tool independently grouped HL fills into trades then fuzzy-matched against DB trades. This was fragile — swapped matches, scoring heuristics, and every edge case (multi-fill entries, missing opens) introduced errors. Running it showed 14/22 trades failing to match because DB `entry_ts` stores candle timestamps (signal time), not actual fill execution time — gaps of 60+ minutes.
+
+### Changes
+1. **DB-anchored reconciliation** — rewrote `tools/reconcile_hl.py`. Each DB trade defines a time window; HL fills within it are claimed and summed. No independent grouping or fuzzy matching. Level 0 (totals) + Level 1 (per-trade) comparison.
+
+2. **Order ID matching** — HL API fills have `oid` (order ID). The engine already tracked `entry_oid`, `stop_oid`, `target_oid` on `PositionState` but never persisted them. Added all three to the `trades` table with ALTER TABLE migration for existing DBs. Reconcile now matches fills by oid when available, falls back to 1-hour time window for legacy trades.
+
+3. **Equity delta for total PnL** — `/pnl`, `/equity`, and dashboard Total PnL now use `equity - initial_capital` (actual HL balance change) instead of summing DB trade `net_pnl`. Trade sums were off by ~$1.13 due to orphan fills the DB doesn't know about (pre-engine trades, manual closes). Win rate and trade count still from DB trades.
+
+### Findings
+- DB `entry_ts` and `exit_ts` are candle-aligned, not actual fill times — this is by design (signal time), but means time-window reconciliation needs wide margins for legacy trades.
+- 6 orphan fills: 4 from pre-engine trading (Apr 3-4), 2 from manual closes where the exit fill happened much later than DB expected.
+- Daily PnL was already correct (uses equity delta). Only the total PnL display was slightly off.
+- HL `closedPnl` includes fees but excludes funding. `net_pnl_usd` in DB = `closedPnl + funding`. The math is sound.
+
+### Files
+- `tools/reconcile_hl.py` — full rewrite
+- `data/store.py` — `entry_oid`, `stop_oid`, `target_oid` columns + migration
+- `live/engine.py` — wire oids to Trade
+- `notifications/bot.py` — equity delta for /pnl, /equity
+- `dashboard/app.py` + `index.html` — equity delta for Total PnL stat
+- `tests/test_reconcile.py` — 15 tests (time-window + oid matching)
