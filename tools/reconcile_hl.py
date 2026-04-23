@@ -126,25 +126,32 @@ def reconcile(hl_trades: list[dict], db_trades: list[dict]) -> None:
         print(f"\n  TOTAL: net={total_net:+.4f} fees={total_fees:.4f}")
         return
 
-    # Match by entry_ts (within 120s window)
+    # Match by entry_ts (within 2h window) + side
     matched = 0
     mismatches = []
+    used = set()
     for hl in hl_trades:
         best_match = None
+        best_idx = None
         best_delta = float("inf")
-        for db in db_trades:
+        for i, db in enumerate(db_trades):
+            if i in used:
+                continue
             delta = abs(hl["entry_ts"] - db["entry_ts"])
             if delta < best_delta and delta < 7_200_000 and hl["side"] == db["side"]:
                 best_delta = delta
                 best_match = db
+                best_idx = i
 
         if best_match is None:
             mismatches.append(("MISSING_IN_DB", hl, None))
             continue
 
+        used.add(best_idx)
         matched += 1
-        # Compare fields
-        net_diff = abs(hl["net_pnl"] - best_match["net_pnl_usd"])
+        # Compare excluding funding (HL closedPnl doesn't include funding)
+        db_net_ex_funding = best_match["net_pnl_usd"] - (best_match["funding_usd"] or 0)
+        net_diff = abs(hl["net_pnl"] - db_net_ex_funding)
         if net_diff > 0.01:
             mismatches.append(("NET_PNL_MISMATCH", hl, best_match))
 
@@ -156,10 +163,12 @@ def reconcile(hl_trades: list[dict], db_trades: list[dict]) -> None:
                 print(f"  MISSING: {hl['side']} entry_ts={hl['entry_ts']} "
                       f"net={hl['net_pnl']:+.4f}")
             else:
+                db_ex_fund = db["net_pnl_usd"] - (db["funding_usd"] or 0)
                 print(f"  MISMATCH: {hl['side']} "
                       f"HL_net={hl['net_pnl']:+.4f} "
-                      f"DB_net={db['net_pnl_usd']:+.4f} "
-                      f"diff={hl['net_pnl'] - db['net_pnl_usd']:+.4f}")
+                      f"DB_net_ex_funding={db_ex_fund:+.4f} "
+                      f"diff={hl['net_pnl'] - db_ex_fund:+.4f} "
+                      f"(funding={db['funding_usd'] or 0:+.4f})")
     else:
         print("  All trades match!\n")
 
