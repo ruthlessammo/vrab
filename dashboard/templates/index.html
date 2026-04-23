@@ -169,6 +169,8 @@ const ENTRY_SIGMA = 2.5;
 
 let equityChart = null;
 let dailyChart = null;
+let _liveEquity = null;
+let _initialCapital = null;
 
 // -- Sigma bar --
 function updateSigmaBar(data) {
@@ -218,6 +220,10 @@ function updateStatus(data) {
   const statusEl = document.getElementById('st-status');
   statusEl.textContent = data.circuit_breaker ? 'CIRCUIT BREAKER' : data.status;
   statusEl.className = 'status-value ' + (data.status === 'running' && !data.circuit_breaker ? 'green' : 'red');
+
+  // Cache for equity-delta total PnL
+  if (data.live_equity != null) _liveEquity = data.live_equity;
+  if (data.initial_capital != null) _initialCapital = data.initial_capital;
 
   // Prefer live values from engine (includes unrealized PnL)
   if (data.live_equity != null) {
@@ -345,9 +351,12 @@ function updateTrades(trades) {
   });
 
   const total = wins + losses;
+  // Use equity delta (source of truth) when available, fall back to trade sums
+  const displayPnl = (_liveEquity != null && _initialCapital != null && _initialCapital > 0)
+    ? _liveEquity - _initialCapital : totalPnl;
   const pnlEl = document.getElementById('stat-pnl');
-  pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2);
-  pnlEl.className = 'val ' + (totalPnl >= 0 ? 'green' : 'red');
+  pnlEl.textContent = (displayPnl >= 0 ? '+' : '') + '$' + displayPnl.toFixed(2);
+  pnlEl.className = 'val ' + (displayPnl >= 0 ? 'green' : 'red');
 
   document.getElementById('stat-trades').textContent = total;
   document.getElementById('stat-wr').textContent = total > 0 ? (wins / total * 100).toFixed(1) + '%' : '--';

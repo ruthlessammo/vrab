@@ -165,11 +165,18 @@ class TelegramBot:
             r["pnl_usd"] for r in daily_records if r["date"] != today
         ) + daily_pnl
 
-        # Total: all trades from DB (already includes today's closed trades)
+        # Analytics from DB trades (win rate, count)
         all_trades = self._store.get_trades(limit=10000)
         source = self._status.mode
         source_trades = [t for t in all_trades if t.source == source]
-        total_pnl = sum(t.net_pnl for t in source_trades)
+
+        # Total PnL: equity delta (source of truth — matches actual HL balance)
+        equity = self._status.equity
+        initial_capital = float(self._store.get_meta("initial_capital") or "0")
+        if initial_capital > 0:
+            total_pnl = equity - initial_capital
+        else:
+            total_pnl = sum(t.net_pnl for t in source_trades)
         total_count = len(source_trades)
         wins = sum(1 for t in source_trades if t.net_pnl > 0)
         win_rate = wins / total_count if total_count else 0.0
@@ -179,15 +186,10 @@ class TelegramBot:
     async def _cmd_equity(self) -> str:
         """Handle /equity command."""
         equity = self._status.equity
-
-        all_trades = self._store.get_trades(limit=10000)
-        source = self._status.mode
-        source_trades = [t for t in all_trades if t.source == source]
-        total_pnl = sum(t.net_pnl for t in source_trades)
-
         initial_capital = float(self._store.get_meta("initial_capital") or "0")
         if initial_capital <= 0:
             initial_capital = equity  # fallback: treat current equity as capital
+        total_pnl = equity - initial_capital
         return format_equity(equity, initial_capital, total_pnl)
 
     async def _cmd_trades(self) -> str:
