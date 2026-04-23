@@ -123,6 +123,7 @@ class TelegramBot:
             "/pause": self._cmd_pause,
             "/resume": self._cmd_resume,
             "/graduation": self._cmd_graduation,
+            "/reconcile": self._cmd_reconcile,
         }
 
         handler = handlers.get(cmd)
@@ -145,7 +146,8 @@ class TelegramBot:
                 "/resume — Resume trading\n"
                 "/kill — Emergency stop\n"
                 "/reset — Clear circuit breaker\n"
-                "/graduation — Scaling progress"
+                "/graduation — Scaling progress\n"
+                "/reconcile — Check DB vs HL"
             )
 
     async def _cmd_status(self) -> str:
@@ -253,6 +255,35 @@ class TelegramBot:
         self._engine._halted_today = False
         logger.info("Trading resumed via Telegram")
         return "*Trading Resumed*\nNew entries enabled."
+
+    async def _cmd_reconcile(self) -> str:
+        """Handle /reconcile command — compare DB trades vs HL API."""
+        import asyncio
+        from tools.reconcile_hl import (
+            fetch_fills_from_api, group_into_trades, reconcile,
+            format_reconcile_telegram,
+        )
+
+        if not self._engine:
+            return "*Error*: Engine reference not available"
+
+        wallet = self._engine._client._wallet_address
+        # Fetch all fills since earliest DB trade
+        db_trades_raw = self._store.get_trades(limit=10000)
+        source_trades = [t for t in db_trades_raw if t.source == "live"]
+        if not source_trades:
+            return "*No live trades to reconcile*"
+
+        start_ts = min(t.entry_ts for t in source_trades)
+        fills = await asyncio.to_thread(fetch_fills_from_api, wallet, start_ts)
+        hl_trades = group_into_trades(fills)
+
+        # Load raw DB dicts for reconcile (needs funding_usd field)
+        from tools.reconcile_hl import load_db_trades
+        db_trades = load_db_trades(self._store._db_path)
+
+        result = reconcile(hl_trades, db_trades)
+        return format_reconcile_telegram(result)
 
     async def _cmd_graduation(self) -> str:
         """Handle /graduation command — show scaling progress."""

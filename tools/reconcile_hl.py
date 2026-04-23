@@ -1,16 +1,19 @@
-"""Reconcile DB trades against Hyperliquid CSV export.
+"""Reconcile DB trades against Hyperliquid fills.
 
-Usage: python -m tools.reconcile_hl path/to/trade_history.csv [--db path/to/vrab.db]
+Usage:
+  python -m tools.reconcile_hl                          # fetch from HL API
+  python -m tools.reconcile_hl --csv path/to/trades.csv # use CSV export
+  python -m tools.reconcile_hl --days 7                 # last 7 days only
 
-Parses the HL CSV, groups fills into round-trip trades, and compares against
-DB trades by matching on entry timestamp and side. Reports discrepancies in
-PnL, fees, and net_pnl.
+Fetches fills from the HL API (or parses a CSV), groups into round-trip
+trades, and compares against DB trades. Reports discrepancies in PnL.
 """
 
 import argparse
 import csv
+import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 def parse_hl_csv(csv_path: str) -> list[dict]:
@@ -35,6 +38,30 @@ def parse_hl_csv(csv_path: str) -> list[dict]:
                 "closedPnl": float(row["closedPnl"]),
             })
     return fills
+
+
+def fetch_fills_from_api(wallet_address: str, start_ts: int,
+                         end_ts: int | None = None) -> list[dict]:
+    """Fetch fills directly from HL API. No private key needed."""
+    from hyperliquid.info import Info
+
+    info = Info(skip_ws=True)
+    fills = info.user_fills_by_time(wallet_address, start_ts, end_ts)
+
+    # API returns numeric fields; normalise to same shape as CSV parser
+    result = []
+    for f in fills:
+        result.append({
+            "time": f["time"],
+            "coin": f["coin"],
+            "dir": f["dir"],
+            "px": float(f["px"]),
+            "sz": float(f["sz"]),
+            "ntl": float(f["px"]) * float(f["sz"]),
+            "fee": float(f["fee"]),
+            "closedPnl": float(f["closedPnl"]),
+        })
+    return result
 
 
 def group_into_trades(fills: list[dict]) -> list[dict]:
@@ -106,30 +133,26 @@ def load_db_trades(db_path: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def reconcile(hl_trades: list[dict], db_trades: list[dict]) -> None:
-    """Compare HL trades against DB trades and report discrepancies."""
-    print(f"\n{'='*80}")
-    print(f"RECONCILIATION: {len(hl_trades)} HL trades vs {len(db_trades)} DB trades")
-    print(f"{'='*80}\n")
-
+def reconcile(hl_trades: list[dict], db_trades: list[dict]) -> dict:
+    """Compare HL trades against DB trades. Returns result dict."""
     if not db_trades:
-        print("No live trades in DB. Showing HL summary only.\n")
-        total_net = 0.0
-        total_fees = 0.0
-        for i, t in enumerate(hl_trades, 1):
-            print(f"  #{i:2d} {t['side']:5s} "
-                  f"entry=${t['entry_price']:.1f} exit=${t['exit_price']:.1f} "
-                  f"gross={t['gross_pnl']:+.4f} fees={t['total_fees']:.4f} "
-                  f"net={t['net_pnl']:+.4f}")
-            total_net += t["net_pnl"]
-            total_fees += t["total_fees"]
-        print(f"\n  TOTAL: net={total_net:+.4f} fees={total_fees:.4f}")
-        return
+        hl_total = sum(t["net_pnl"] for t in hl_trades)
+        return {
+            "hl_count": len(hl_trades),
+            "db_count": 0,
+            "matched": 0,
+            "mismatches": [],
+            "hl_total_net": hl_total,
+            "db_total_net": 0.0,
+        }
 
     # Match by entry_ts (within 2h window) + side
     matched = 0
     mismatches = []
     used = set()
+    matched_hl_net = 0.0
+    matched_db_net = 0.0
+
     for hl in hl_trades:
         best_match = None
         best_idx = None
@@ -149,38 +172,107 @@ def reconcile(hl_trades: list[dict], db_trades: list[dict]) -> None:
 
         used.add(best_idx)
         matched += 1
+        matched_hl_net += hl["net_pnl"]
+        matched_db_net += best_match["net_pnl_usd"]
+
         # Compare excluding funding (HL closedPnl doesn't include funding)
         db_net_ex_funding = best_match["net_pnl_usd"] - (best_match["funding_usd"] or 0)
         net_diff = abs(hl["net_pnl"] - db_net_ex_funding)
         if net_diff > 0.01:
             mismatches.append(("NET_PNL_MISMATCH", hl, best_match))
 
-    print(f"  Matched: {matched}/{len(hl_trades)}")
+    return {
+        "hl_count": len(hl_trades),
+        "db_count": len(db_trades),
+        "matched": matched,
+        "mismatches": mismatches,
+        "hl_total_net": sum(t["net_pnl"] for t in hl_trades),
+        "db_total_net": sum(t["net_pnl_usd"] for t in db_trades),
+        "matched_hl_net": matched_hl_net,
+        "matched_db_net": matched_db_net,
+    }
+
+
+def format_reconcile_report(result: dict) -> str:
+    """Format reconcile result as a readable report string."""
+    lines = []
+    lines.append(f"HL trades: {result['hl_count']}  |  DB trades: {result['db_count']}")
+    lines.append(f"Matched: {result['matched']}/{result['hl_count']}")
+
+    mismatches = result["mismatches"]
     if mismatches:
-        print(f"  Issues:  {len(mismatches)}\n")
+        lines.append(f"Issues: {len(mismatches)}")
+        lines.append("")
         for issue_type, hl, db in mismatches:
             if issue_type == "MISSING_IN_DB":
-                print(f"  MISSING: {hl['side']} entry_ts={hl['entry_ts']} "
-                      f"net={hl['net_pnl']:+.4f}")
+                dt = datetime.fromtimestamp(hl["entry_ts"] / 1000, tz=timezone.utc)
+                lines.append(
+                    f"  MISSING: {hl['side']} {dt:%m/%d %H:%M} "
+                    f"net={hl['net_pnl']:+.4f}"
+                )
             else:
                 db_ex_fund = db["net_pnl_usd"] - (db["funding_usd"] or 0)
-                print(f"  MISMATCH: {hl['side']} "
-                      f"HL_net={hl['net_pnl']:+.4f} "
-                      f"DB_net_ex_funding={db_ex_fund:+.4f} "
-                      f"diff={hl['net_pnl'] - db_ex_fund:+.4f} "
-                      f"(funding={db['funding_usd'] or 0:+.4f})")
+                lines.append(
+                    f"  MISMATCH: {hl['side']} "
+                    f"HL={hl['net_pnl']:+.4f} "
+                    f"DB={db_ex_fund:+.4f} "
+                    f"diff={hl['net_pnl'] - db_ex_fund:+.4f} "
+                    f"(fund={db['funding_usd'] or 0:+.4f})"
+                )
     else:
-        print("  All trades match!\n")
+        lines.append("All trades match!")
+
+    lines.append("")
+    lines.append(f"HL total:  ${result['hl_total_net']:+.4f}")
+    lines.append(f"DB total:  ${result['db_total_net']:+.4f}")
+
+    return "\n".join(lines)
+
+
+def format_reconcile_telegram(result: dict) -> str:
+    """Format reconcile result for Telegram (compact, markdown)."""
+    matched = result["matched"]
+    total = result["hl_count"]
+    mismatches = result["mismatches"]
+    missing = sum(1 for t, _, _ in mismatches if t == "MISSING_IN_DB")
+    pnl_mismatches = sum(1 for t, _, _ in mismatches if t == "NET_PNL_MISMATCH")
+
+    status = "ALL MATCH" if not mismatches else f"{len(mismatches)} issues"
+
+    lines = [
+        "*Reconciliation*",
+        f"Matched: `{matched}/{total}` — {status}",
+    ]
+    if missing:
+        lines.append(f"Missing in DB: `{missing}`")
+    if pnl_mismatches:
+        lines.append(f"PnL mismatches: `{pnl_mismatches}`")
+    lines.append(f"HL total: `${result['hl_total_net']:+.2f}`")
+    lines.append(f"DB total: `${result['db_total_net']:+.2f}`")
+
+    return "\n".join(lines)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Reconcile DB vs HL CSV")
-    parser.add_argument("csv_path", help="Path to HL trade_history CSV")
+    parser = argparse.ArgumentParser(description="Reconcile DB vs HL fills")
+    parser.add_argument("--csv", default=None, help="Path to HL trade_history CSV (if omitted, fetches from API)")
     parser.add_argument("--db", default="data/vrab.db", help="Path to SQLite DB")
+    parser.add_argument("--wallet", default=None, help="HL wallet address (default: HL_WALLET_ADDRESS env var)")
+    parser.add_argument("--days", type=int, default=30, help="Lookback days when fetching from API (default: 30)")
     args = parser.parse_args()
 
-    fills = parse_hl_csv(args.csv_path)
-    print(f"Parsed {len(fills)} fills from {args.csv_path}")
+    if args.csv:
+        fills = parse_hl_csv(args.csv)
+        print(f"Parsed {len(fills)} fills from {args.csv}")
+    else:
+        wallet = args.wallet or os.environ.get("HL_WALLET_ADDRESS", "")
+        if not wallet:
+            print("ERROR: No wallet address. Set HL_WALLET_ADDRESS or use --wallet")
+            return
+        start_ts = int((datetime.now(timezone.utc) - timedelta(days=args.days)).timestamp() * 1000)
+        print(f"Fetching fills from HL API (last {args.days} days)...")
+        fills = fetch_fills_from_api(wallet, start_ts)
+        print(f"Fetched {len(fills)} fills")
 
     hl_trades = group_into_trades(fills)
     print(f"Grouped into {len(hl_trades)} round-trip trades")
@@ -191,7 +283,10 @@ def main():
         print(f"Could not load DB ({args.db}): {e}")
         db_trades = []
 
-    reconcile(hl_trades, db_trades)
+    result = reconcile(hl_trades, db_trades)
+    print(f"\n{'='*60}")
+    print(format_reconcile_report(result))
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
