@@ -61,6 +61,8 @@ def fetch_fills_from_api(wallet_address: str, start_ts: int,
             "fee": float(f["fee"]),
             "closedPnl": float(f["closedPnl"]),
         })
+    # Sort chronologically — API doesn't guarantee order
+    result.sort(key=lambda f: f["time"])
     return result
 
 
