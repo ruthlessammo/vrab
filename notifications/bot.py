@@ -260,7 +260,7 @@ class TelegramBot:
         """Handle /reconcile command — compare DB trades vs HL API."""
         import asyncio
         from tools.reconcile_hl import (
-            fetch_fills_from_api, group_into_trades, reconcile,
+            fetch_fills_from_api, load_db_trades, reconcile,
             format_reconcile_telegram,
         )
 
@@ -276,13 +276,11 @@ class TelegramBot:
 
         start_ts = min(t.entry_ts for t in source_trades)
         fills = await asyncio.to_thread(fetch_fills_from_api, wallet, start_ts)
-        hl_trades = group_into_trades(fills)
 
         # Load raw DB dicts for reconcile (needs funding_usd field)
-        from tools.reconcile_hl import load_db_trades
         db_trades = load_db_trades(self._store._db_path)
 
-        result = reconcile(hl_trades, db_trades)
+        result = reconcile(fills, db_trades)
         return format_reconcile_telegram(result)
 
     async def _cmd_graduation(self) -> str:
