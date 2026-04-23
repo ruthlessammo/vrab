@@ -134,7 +134,7 @@ def reconcile(hl_trades: list[dict], db_trades: list[dict]) -> None:
         best_delta = float("inf")
         for db in db_trades:
             delta = abs(hl["entry_ts"] - db["entry_ts"])
-            if delta < best_delta and delta < 120_000:
+            if delta < best_delta and delta < 7_200_000 and hl["side"] == db["side"]:
                 best_delta = delta
                 best_match = db
 
